@@ -573,6 +573,86 @@ TASKS_LOG_COLUMNS = [
 TASK_STATUSES = ["To Do", "In Progress", "Done", "Stuck"]
 TASK_PRIORITIES = ["רגיל", "דחוף", "קריטי"]
 
+# סטטוסים שנחשבים "הושלם" - משימות עם סטטוס כזה לא יוצגו ברשימה
+DONE_STATUSES = ("done", "בוצע", "הושלם", "completed")
+
+def _parse_date_safe(val, date_column_name: str = "Date") -> date | None:
+    """ממיר ערך תאריך (מחרוזת או אחר) ל-date. מחזיר None אם ריק/לא תקין."""
+    if val is None or (isinstance(val, str) and not (val or "").strip()):
+        return None
+    if isinstance(val, date):
+        return val
+    if isinstance(val, datetime):
+        return val.date()
+    try:
+        dt = pd.to_datetime(val, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.date() if hasattr(dt, "date") else dt
+    except Exception:
+        return None
+
+def _filter_tasks_by_status_and_date(
+    tasks: list[dict],
+    date_col: str,
+    status_col: str = "Status",
+    done_statuses: tuple[str, ...] = DONE_STATUSES,
+) -> list[dict]:
+    """
+    מסנן משימות: סטטוס לא 'בוצע' ותאריך <= היום (או תאריך ריק - יוצגו באיחור).
+    מחזיר רשימה ממוינת: באיחור ראשון, אחר כך היום.
+    תאים ריקים: מטפלים ב-pd.to_datetime(errors='coerce') - תאריך לא תקין יוצג באיחור.
+    """
+    today_dt = date.today()
+    result = []
+    for t in tasks:
+        status = (t.get(status_col) or "").strip().lower()
+        if status in done_statuses:
+            continue
+        parsed = _parse_date_safe(t.get(date_col), date_col)
+        if parsed is not None and parsed > today_dt:
+            continue  # תאריך עתידי - לא מציגים
+        # תאריך ריק/לא תקין: מציגים (כאילו באיחור) כדי לא לאבד משימות
+        sort_date = parsed if parsed is not None else today_dt - timedelta(days=1)
+        result.append((t, sort_date))
+    # מיון: באיחור (תאריך < היום) ראשון, אחר כך היום
+    result.sort(key=lambda x: (0 if x[1] < today_dt else 1, x[1]))
+    return [r[0] for r in result]
+
+def _is_done_daily(val) -> bool:
+    """בודק אם משימה יומית סומנה כהושלמה (Is Done)."""
+    if val is True or val == 1:
+        return True
+    if isinstance(val, str) and (val or "").strip().lower() in ("true", "1", "yes"):
+        return True
+    return False
+
+def _filter_daily_tasks_by_date(
+    tasks: list[dict],
+    date_col: str = "Date",
+    status_col: str = "Status",
+) -> list[dict]:
+    """
+    מסנן משימות יומיות: לא הושלמו (Is Done=False), סטטוס לא בוצע, תאריך <= היום.
+    מחזיר רשימה ממוינת: באיחור ראשון, אחר כך היום.
+    תאים ריקים: תאריך לא תקין יוצג באיחור כדי לא לאבד משימות.
+    """
+    today_dt = date.today()
+    result = []
+    for t in tasks:
+        if _is_done_daily(t.get("Is Done")):
+            continue
+        status = (t.get(status_col) or "").strip().lower()
+        if status in DONE_STATUSES:
+            continue
+        parsed = _parse_date_safe(t.get(date_col), date_col)
+        if parsed is not None and parsed > today_dt:
+            continue  # תאריך עתידי - לא מציגים
+        sort_date = parsed if parsed is not None else today_dt - timedelta(days=1)
+        result.append((t, sort_date))
+    result.sort(key=lambda x: (0 if x[1] < today_dt else 1, x[1]))
+    return [r[0] for r in result]
+
 # רשימת משתמשים במסך הכניסה (ניתן לעדכן שמות עובדים)
 TEAM_MEMBERS_LOGIN = ['Admin (טלי / ערן)', "ג'ורג'", 'אור', 'ליאור', 'אחיעד', 'מיה']
 # רשימת Assignees למשימות יומיות (לבחירת מנהל)
@@ -3442,8 +3522,10 @@ def show_tasks_page() -> None:
 
         tasks_rows_monitor = read_tasks()
         today_dt = date.today()
-        # זמנית: הצגת כל המשימות (ביטול סינון Status != Done)
-        open_tasks = list(tasks_rows_monitor)
+        # סינון חכם: סטטוס לא בוצע, תאריך <= היום. מיון: באיחור ראשון, אחר כך היום.
+        open_tasks = _filter_tasks_by_status_and_date(
+            tasks_rows_monitor, date_col="Due Date", status_col="Status"
+        )
         # משתמש שאינו מנהל - זמנית מציגים הכל (ביטול סינון לפי Assignee)
         # if not is_admin():
         #     current_user = _get_assignee_for_current_user()
@@ -3631,10 +3713,21 @@ def show_tasks_page() -> None:
         if not tasks_rows:
             st.info("אין משימות. הוסף משימה חדשה למעלה.")
         else:
-            df = pd.DataFrame(tasks_rows, columns=TASKS_LOG_COLUMNS)
+            # סינון חכם: סטטוס לא בוצע, תאריך <= היום. מיון: באיחור ראשון, אחר כך היום.
+            filtered_rows = _filter_tasks_by_status_and_date(
+                tasks_rows, date_col="Due Date", status_col="Status"
+            )
+            df = pd.DataFrame(filtered_rows, columns=TASKS_LOG_COLUMNS)
+            df = df.reindex(columns=TASKS_LOG_COLUMNS, fill_value='')
             df = df.fillna('')
             if hasattr(df.columns, 'str'):
                 df.columns = df.columns.str.strip()
+            # הוספת עמודת אינדיקציה לאיחור (🔴 למשימות שנגררו)
+            today_dt = date.today()
+            def _overdue_indicator(row):
+                d = _parse_date_safe(row.get("Due Date"), "Due Date")
+                return "🔴" if d is None or d < today_dt else ""
+            df.insert(0, "איחור", df.apply(_overdue_indicator, axis=1))
             # זמנית: ביטול סינון לפי Assignee - הצגת כל המשימות
             # if not is_admin():
             #     current_user = _get_assignee_for_current_user()
@@ -3646,7 +3739,7 @@ def show_tasks_page() -> None:
             else:
                 try:
                     editable_cols = ["Status", "Priority", "Notes"]
-                    disabled_cols = [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
+                    disabled_cols = ["איחור"] + [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
                     edited_df = st.data_editor(
                         df,
                         hide_index=True,
@@ -3670,12 +3763,14 @@ def show_tasks_page() -> None:
                     st.error(f"שגיאה בהצגת נתונים: {e}")
                     edited_df = df
                 if st.button("שמור שינויים", type="primary", key="save_tasks_btn"):
+                    # הסרת עמודת האינדיקציה לפני שמירה
+                    save_df = edited_df.drop(columns=["איחור"], errors="ignore")
                     if is_admin():
-                        updated = edited_df.to_dict(orient="records")
+                        updated = save_df.to_dict(orient="records")
                     else:
                         # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימת המשימות המלאה
                         full_rows = read_tasks()
-                        edited_records = edited_df.to_dict(orient="records")
+                        edited_records = save_df.to_dict(orient="records")
                         edited_by_id = {str(r.get("Task ID", "")): r for r in edited_records}
                         for i, row in enumerate(full_rows):
                             tid = str(row.get("Task ID", ""))
@@ -4083,33 +4178,32 @@ def _user_in_team(team_value: str, current_user: str) -> bool:
 def _render_daily_tasks_editor(assignee: str, key_prefix: str = "daily_tasks") -> None:
     """
     מציג data_editor למשימות יומיות של assignee מסוים.
-    מסנן משימות שלא הושלמו (Is Done == False/0).
+    מסנן משימות שלא הושלמו (Is Done == False/0), תאריך <= היום.
     בעת סימון וי - מעדכן את הקובץ ומריץ rerun.
     """
     all_tasks = read_daily_tasks()
     today_str = date.today().strftime("%Y-%m-%d")
 
-    def _is_done(val) -> bool:
-        if val is True or val == 1 or (isinstance(val, str) and val.strip().lower() in ("true", "1", "yes")):
-            return True
-        return False
-
-    # סינון: Assignee תואם + לא הושלם
-    pending = [
-        r for r in all_tasks
-        if (r.get("Assignee") or "").strip() == assignee and not _is_done(r.get("Is Done"))
-    ]
+    # סינון: Assignee תואם, ואז סינון חכם (תאריך <= היום, לא הושלמו)
+    assignee_tasks = [r for r in all_tasks if (r.get("Assignee") or "").strip() == assignee]
+    pending = _filter_daily_tasks_by_date(assignee_tasks, date_col="Date", status_col="Status")
 
     if not pending:
         st.info("אין משימות ממתינות להיום. כל הכבוד! 🎉")
         return
 
     # המרת Is Done לבוליאני לתצוגה (CheckboxColumn דורש bool)
+    today_dt = date.today()
     for r in pending:
         r["Is Done"] = False
 
     df = pd.DataFrame(pending)
     df = df.fillna('')
+    # הוספת אינדיקציה לאיחור (🔴 למשימות שנגררו)
+    def _ov(row):
+        d = _parse_date_safe(row.get("Date"), "Date")
+        return "🔴" if d is None or d < today_dt else ""
+    df.insert(0, "איחור", df.apply(_ov, axis=1))
     if "Is Done" not in df.columns:
         df["Is Done"] = False
 
@@ -4125,6 +4219,7 @@ def _render_daily_tasks_editor(assignee: str, key_prefix: str = "daily_tasks") -
         r["Flexible"] = _is_flexible(r.get("Flexible"))
 
     column_config = {
+        "איחור": st.column_config.TextColumn("איחור", disabled=True),
         "Task Name": st.column_config.TextColumn("שם המשימה", disabled=True),
         "Project": st.column_config.TextColumn("פרויקט", disabled=True),
         "Assignee": st.column_config.TextColumn("אחראי", disabled=True),
@@ -4178,41 +4273,21 @@ def show_my_work_page() -> None:
         st.info("אין משימות. כל הכבוד! 🎉")
         return
 
-    def _is_done(val) -> bool:
-        if val is True or val == 1 or (isinstance(val, str) and (val or "").strip().lower() in ("true", "1", "yes")):
-            return True
-        return False
-
     safe_current_user = clean_name_for_match(current_user)
 
-    # סינון: השם המנוקה של המשתמש נמצא בתוך השם המנוקה של האחראי
-    df_raw = pd.DataFrame(all_tasks)
-    df_raw = df_raw.fillna('')
-    df_user_tasks = df_raw[
-        df_raw["Assignee"].apply(
-            lambda x: bool(safe_current_user) and safe_current_user in clean_name_for_match(x)
-        )
-        & ~df_raw["Is Done"].apply(_is_done)
-    ].copy()
+    # סינון: משימות של המשתמש הנוכחי
+    user_tasks_raw = [
+        t for t in all_tasks
+        if bool(safe_current_user) and safe_current_user in clean_name_for_match(t.get("Assignee") or "")
+    ]
+    # סינון חכם: תאריך <= היום, לא הושלמו. מיון: באיחור ראשון, אחר כך היום.
+    user_tasks_filtered = _filter_daily_tasks_by_date(user_tasks_raw, date_col="Date", status_col="Status")
 
-    # סינון סטטוס: לא Done/בוצע (אם קיימת עמודת Status)
-    if "Status" in df_user_tasks.columns:
-        done_statuses = ("done", "בוצע", "הושלם")
-        df_user_tasks = df_user_tasks[
-            ~df_user_tasks["Status"].fillna("").str.strip().str.lower().isin(done_statuses)
-        ]
-
-    if df_user_tasks.empty:
+    if not user_tasks_filtered:
         st.info("אין משימות פתוחות. כל הכבוד! 🎉")
         return
 
-    # המרת תאריכים למיון
-    df_user_tasks["_sort_date"] = pd.to_datetime(df_user_tasks["Date"], errors="coerce")
-    df_user_tasks = df_user_tasks.sort_values(
-        by="_sort_date",
-        ascending=True,
-        na_position="last",
-    )
+    df_user_tasks = pd.DataFrame(user_tasks_filtered)
 
     def _mark_task_done(task_name: str, project: str, assignee: str, date_str: str) -> None:
         for t in all_tasks:
@@ -4221,7 +4296,7 @@ def show_my_work_page() -> None:
                 and (t.get("Project") or "").strip() == (project or "").strip()
                 and (t.get("Assignee") or "").strip() == (assignee or "").strip()
                 and (t.get("Date") or "").strip() == (date_str or "").strip()
-                and not _is_done(t.get("Is Done"))
+                and not _is_done_daily(t.get("Is Done"))
             ):
                 t["Is Done"] = "1"
                 break
@@ -4229,13 +4304,17 @@ def show_my_work_page() -> None:
         st.success("המשימה סומנה כהושלמה!")
         st.rerun()
 
-    # תצוגה בכרטיסיות
+    # תצוגה בכרטיסיות (באיחור ראשון, אחר כך היום)
+    today_dt = date.today()
     for i, (_, row) in enumerate(df_user_tasks.iterrows()):
         task_name = (row.get("Task Name") or "").strip()
         project = (row.get("Project") or "").strip()
         assignee = (row.get("Assignee") or "").strip()
         date_str = (row.get("Date") or "").strip()
         status = (row.get("Status") or "").strip()
+        task_date = _parse_date_safe(row.get("Date"), "Date")
+        is_overdue = task_date is None or task_date < today_dt
+        overdue_badge = "🔴 " if is_overdue else ""
 
         with st.container():
             col_btn, col_content = st.columns([0.1, 0.9])
@@ -4243,6 +4322,7 @@ def show_my_work_page() -> None:
                 if st.button("✅ סיום", key=f"my_work_done_{i}"):
                     _mark_task_done(task_name, project, assignee, date_str)
             with col_content:
+                border_color = "#dc3545" if is_overdue else "#0d6efd"
                 st.markdown(
                     f"""
                 <div style="
@@ -4250,10 +4330,10 @@ def show_my_work_page() -> None:
                     border-radius: 8px;
                     padding: 12px 16px;
                     margin-bottom: 8px;
-                    border-right: 4px solid #0d6efd;
+                    border-right: 4px solid {border_color};
                     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
                 ">
-                    <strong>{html.escape(task_name)}</strong><br>
+                    <strong>{overdue_badge}{html.escape(task_name)}</strong><br>
                     <span style="color:#495057; font-size:0.9em;">📁 {html.escape(project)}</span><br>
                     <span style="color:#6c757d; font-size:0.85em;">📅 תאריך יעד: {html.escape(date_str)}</span>
                     {f'<br><span style="color:#6c757d; font-size:0.85em;">סטטוס: {html.escape(status)}</span>' if status else ''}
@@ -4289,35 +4369,26 @@ def show_daily_tasks_page() -> None:
     all_tasks_monitor = read_daily_tasks()
     today = pd.to_datetime("today").normalize()
 
-    # סינון: רק משימות של assignee שטרם בוצעו (Is Done = False, 0, או ריק)
-    df_raw = pd.DataFrame(all_tasks_monitor)
-    df_raw = df_raw.fillna('')
-    if df_raw.empty:
-        df_filtered = df_raw.copy()
-    else:
-        df_filtered = df_raw[
-            df_raw["Assignee"].apply(lambda x: _assignee_matches(str(x or ""), selected_assignee))
-            & ~df_raw["Is Done"].apply(_is_done_monitor)
-        ].copy()
-
-    # המרת תאריכים (קריטי): pd.to_datetime עם errors='coerce' לטיפול תקין
-    if not df_filtered.empty and "Date" in df_filtered.columns:
-        df_filtered["_date"] = pd.to_datetime(df_filtered["Date"], errors="coerce")
-    else:
-        df_filtered["_date"] = pd.NaT
+    # סינון: משימות של assignee
+    assignee_tasks = [
+        t for t in all_tasks_monitor
+        if _assignee_matches(t.get("Assignee") or "", selected_assignee)
+    ]
+    # סינון חכם: תאריך <= היום, לא הושלמו. מיון: באיחור ראשון, אחר כך היום.
+    filtered_list = _filter_daily_tasks_by_date(assignee_tasks, date_col="Date", status_col="Status")
 
     # חלוקה ל-2 קבוצות: overdue (תאריך < היום), today (תאריך == היום)
     overdue_tasks = []
     today_tasks = []
-    for idx, row in df_filtered.iterrows():
-        r = row.to_dict()
-        task_date = r.get("_date")
-        if pd.isna(task_date):
-            overdue_tasks.append((r, 0))  # תאריך לא תקין - נציג באיחור
-        elif task_date < today:
-            days_overdue = (today - task_date).days
+    for t in filtered_list:
+        r = t.copy()
+        task_date = _parse_date_safe(t.get("Date"), "Date")
+        if task_date is None:
+            overdue_tasks.append((r, 0))
+        elif task_date < date.today():
+            days_overdue = (date.today() - task_date).days
             overdue_tasks.append((r, days_overdue))
-        elif task_date == today or task_date.normalize() == today:
+        else:
             today_tasks.append(r)
 
     def _mark_task_done(task_name: str, project: str, date_str: str) -> None:
@@ -4349,9 +4420,9 @@ def show_daily_tasks_page() -> None:
                     _mark_task_done(task_name, project, date_str)
             with col_msg:
                 if is_flex:
-                    st.warning(f"⏳ גמיש: **{task_name}** – {project} – {date_str} ({days_text})")
+                    st.warning(f"🔴 ⏳ גמיש: **{task_name}** – {project} – {date_str} ({days_text})")
                 else:
-                    st.error(f"**{task_name}** – {project} – {date_str} ({days_text})")
+                    st.error(f"🔴 **{task_name}** – {project} – {date_str} ({days_text})")
 
     if today_tasks:
         st.markdown("#### להיום")
