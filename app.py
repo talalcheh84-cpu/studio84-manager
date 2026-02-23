@@ -16,6 +16,25 @@ from streamlit_calendar import calendar
 import holidays
 from docxtpl import DocxTemplate
 import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# --- התחברות לגוגל שיטס ---
+@st.cache_resource
+def init_connection():
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds_data = st.secrets["gcp_service_account"]
+    creds_dict = json.loads(creds_data) if isinstance(creds_data, str) else creds_data
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
+
+try:
+    client = init_connection()
+    SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
+    spreadsheet = client.open_by_key(SHEET_ID)
+except Exception as e:
+    spreadsheet = None
+    st.error(f"שגיאה בהתחברות לגוגל שיטס: {e}")
 
 # נתיב LibreOffice להמרת DOCX ל-PDF (חלופה ל-Word)
 LIBREOFFICE_PATH = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
@@ -89,11 +108,54 @@ QUOTES_APPROVED = QUOTES_ROOT / "Approved"
 QUOTES_REJECTED = QUOTES_ROOT / "Rejected"
 
 
+MESSAGES_COLUMNS = ["Timestamp", "Sender", "Recipient", "Type", "Message"]
+
+
 def _ensure_messages_csv() -> None:
-    """בודק אם messages.csv קיים; אם לא - יוצר אותו עם העמודות הנדרשות."""
-    if not MESSAGES_CSV_PATH.exists():
-        df = pd.DataFrame(columns=["Timestamp", "Sender", "Recipient", "Type", "Message"])
-        df.to_csv(MESSAGES_CSV_PATH, index=False, encoding="utf-8-sig")
+    """וידוא שקיים גיליון messages בגוגל שיטס - תקשורת מהירה."""
+    if spreadsheet is None:
+        return
+    try:
+        spreadsheet.worksheet('messages')
+    except Exception:
+        try:
+            spreadsheet.add_worksheet(title='messages', rows=100, cols=len(MESSAGES_COLUMNS))
+            worksheet = spreadsheet.worksheet('messages')
+            worksheet.update([MESSAGES_COLUMNS], 'A1')
+        except Exception as e:
+            st.warning(f"שגיאה ביצירת גיליון messages: {e}")
+
+
+def _read_messages_df() -> pd.DataFrame:
+    """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
+    if spreadsheet is None:
+        return pd.DataFrame(columns=MESSAGES_COLUMNS)
+    _ensure_messages_csv()
+    try:
+        worksheet = spreadsheet.worksheet('messages')
+        records = worksheet.get_all_records()
+        df = pd.DataFrame(records) if records else pd.DataFrame(columns=MESSAGES_COLUMNS)
+        if df.empty or "Timestamp" not in df.columns:
+            df = pd.DataFrame(columns=MESSAGES_COLUMNS)
+        return df
+    except Exception:
+        return pd.DataFrame(columns=MESSAGES_COLUMNS)
+
+
+def _write_messages_df(df: pd.DataFrame) -> None:
+    """שמירת הודעות תקשורת מהירה לגוגל שיטס."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    try:
+        worksheet = spreadsheet.worksheet('messages')
+        worksheet.clear()
+        df_safe = df.reindex(columns=MESSAGES_COLUMNS, fill_value="").fillna("").astype(str)
+        data = [df_safe.columns.values.tolist()] + df_safe.values.tolist()
+        if data:
+            worksheet.update(data, 'A1')
+    except Exception as e:
+        st.warning(f"שגיאה בשמירת messages: {e}")
 
 
 def clean_name_for_match(name) -> str:
@@ -126,26 +188,16 @@ def _render_quick_comm_sidebar_form() -> None:
             "Type": msg_type,
             "Message": msg_content.strip(),
         }
-        try:
-            df = pd.read_csv(MESSAGES_CSV_PATH, encoding="utf-8-sig")
-            if df.empty or "Timestamp" not in df.columns:
-                df = pd.DataFrame(columns=["Timestamp", "Sender", "Recipient", "Type", "Message"])
-        except Exception:
-            df = pd.DataFrame(columns=["Timestamp", "Sender", "Recipient", "Type", "Message"])
+        df = _read_messages_df()
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(MESSAGES_CSV_PATH, index=False, encoding="utf-8-sig")
+        _write_messages_df(df)
         st.rerun()
 
 
 def _render_quick_comm_notifications() -> None:
     """מציג התראות תקשורת מהירה בראש המסך - הודעות מ-24 השעות האחרונות."""
     _ensure_messages_csv()
-    if not MESSAGES_CSV_PATH.exists():
-        return
-    try:
-        df = pd.read_csv(MESSAGES_CSV_PATH, encoding="utf-8-sig")
-    except Exception:
-        return
+    df = _read_messages_df()
     if df.empty or "Timestamp" not in df.columns:
         return
     current_user = (st.session_state.get("current_user") or "צוות").strip()
@@ -828,45 +880,51 @@ def write_tasks_log(rows: list[dict]) -> None:
 
 
 def _ensure_tasks_csv_schema() -> None:
-    """יצירת tasks.csv אם לא קיים - משימות יומיות."""
-    if not TASKS_CSV_PATH.exists():
+    """וידוא שקיים גיליון tasks בגוגל שיטס - משימות יומיות."""
+    if spreadsheet is None:
+        return
+    try:
+        spreadsheet.worksheet('tasks')
+    except Exception:
         try:
-            with TASKS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=DAILY_TASKS_COLUMNS)
-                writer.writeheader()
+            spreadsheet.add_worksheet(title='tasks', rows=100, cols=len(DAILY_TASKS_COLUMNS))
+            worksheet = spreadsheet.worksheet('tasks')
+            worksheet.update([DAILY_TASKS_COLUMNS], 'A1')
         except Exception as e:
-            st.warning(f"שגיאה ביצירת tasks.csv: {e}")
+            st.warning(f"שגיאה ביצירת גיליון tasks: {e}")
 
 
 def read_daily_tasks() -> list[dict]:
-    """קריאת כל המשימות היומיות מ-tasks.csv."""
+    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
+    if spreadsheet is None:
+        return []
     _ensure_tasks_csv_schema()
-    if not TASKS_CSV_PATH.exists():
-        return []
-    rows: list[dict] = []
     try:
-        with TASKS_CSV_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                # תאימות לאחור: עמודה Flexible חסרה = ""
-                normalized = {c: (r.get(c, "") or "").strip() for c in DAILY_TASKS_COLUMNS}
-                rows.append(normalized)
+        worksheet = spreadsheet.worksheet('tasks')
+        records = worksheet.get_all_records()
+        rows = []
+        for r in records:
+            normalized = {c: (str(r.get(c, "") or "").strip()) for c in DAILY_TASKS_COLUMNS}
+            rows.append(normalized)
+        return rows
     except Exception as e:
-        st.warning(f"שגיאה בקריאת tasks.csv: {e}")
+        st.warning(f"שגיאה בקריאת tasks: {e}")
         return []
-    return rows
 
 
 def write_daily_tasks(rows: list[dict]) -> None:
-    """שמירת משימות יומיות ל-tasks.csv."""
+    """שמירת משימות יומיות לגוגל שיטס (גיליון tasks)."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
     try:
-        with TASKS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=DAILY_TASKS_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in DAILY_TASKS_COLUMNS})
+        worksheet = spreadsheet.worksheet('tasks')
+        worksheet.clear()
+        data = [DAILY_TASKS_COLUMNS] + [[str(r.get(c, "") or "") for c in DAILY_TASKS_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
     except Exception as e:
-        st.warning(f"שגיאה בשמירת tasks.csv: {e}")
+        st.warning(f"שגיאה בשמירת tasks: {e}")
 
 
 def append_kickoff_tasks_to_csv(
@@ -961,68 +1019,55 @@ def append_project_record(
 
 
 def _ensure_projects_csv_schema() -> None:
-    """Ensure projects.csv exists with columns: ID, Client, Project, Deadline, Team, Status, Budget_Hours."""
-    if not PROJECTS_CSV_PATH.exists():
-        try:
-            with PROJECTS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECTS_CSV_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת projects.csv: {e}")
+    """וידוא שקיים גיליון projects בגוגל שיטס - פרויקטים פעילים."""
+    if spreadsheet is None:
         return
-
-    header = _read_csv_header(PROJECTS_CSV_PATH)
-    header_norm = [h.strip() for h in header]
-    if header_norm != PROJECTS_CSV_COLUMNS:
+    try:
+        spreadsheet.worksheet('projects')
+    except Exception:
         try:
-            rows: list[dict] = []
-            with PROJECTS_CSV_PATH.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for r in reader:
-                    normalized = {c: (r.get(c) or "").strip() for c in PROJECTS_CSV_COLUMNS}
-                    rows.append(normalized)
-            with PROJECTS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECTS_CSV_COLUMNS)
-                writer.writeheader()
-                for r in rows:
-                    writer.writerow({c: (r.get(c) or "") for c in PROJECTS_CSV_COLUMNS})
+            spreadsheet.add_worksheet(title='projects', rows=100, cols=len(PROJECTS_CSV_COLUMNS))
+            worksheet = spreadsheet.worksheet('projects')
+            worksheet.update([PROJECTS_CSV_COLUMNS], 'A1')
         except Exception as e:
-            st.warning(f"שגיאה בעדכון מבנה projects.csv: {e}")
+            st.warning(f"שגיאה ביצירת גיליון projects: {e}")
 
 
 def read_projects_csv() -> list[dict]:
-    """Read all rows from projects.csv (פרויקטים פעילים)."""
+    """קריאת כל הפרויקטים הפעילים מגוגל שיטס (גיליון projects)."""
+    if spreadsheet is None:
+        return []
     _ensure_projects_csv_schema()
-    if not PROJECTS_CSV_PATH.exists():
-        return []
-
-    rows: list[dict] = []
     try:
-        with PROJECTS_CSV_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                normalized = {c: (r.get(c) or "").strip() for c in PROJECTS_CSV_COLUMNS}
-                status = normalized.get("Status") or "Active"
-                if status not in PROJECTS_CSV_STATUSES:
-                    status = "Active"
-                normalized["Status"] = status
-                rows.append(normalized)
+        worksheet = spreadsheet.worksheet('projects')
+        records = worksheet.get_all_records()
+        rows = []
+        for r in records:
+            normalized = {c: (str(r.get(c, "") or "").strip()) for c in PROJECTS_CSV_COLUMNS}
+            status = normalized.get("Status") or "Active"
+            if status not in PROJECTS_CSV_STATUSES:
+                status = "Active"
+            normalized["Status"] = status
+            rows.append(normalized)
+        return rows
     except Exception as e:
-        st.warning(f"שגיאה בקריאת projects.csv: {e}")
+        st.warning(f"שגיאה בקריאת projects: {e}")
         return []
-    return rows
 
 
 def write_projects_csv(rows: list[dict]) -> None:
-    """Write all rows to projects.csv."""
+    """שמירת פרויקטים פעילים לגוגל שיטס (גיליון projects)."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
     try:
-        with PROJECTS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=PROJECTS_CSV_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in PROJECTS_CSV_COLUMNS})
+        worksheet = spreadsheet.worksheet('projects')
+        worksheet.clear()
+        data = [PROJECTS_CSV_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_CSV_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
     except Exception as e:
-        st.warning(f"שגיאה בשמירת projects.csv: {e}")
+        st.warning(f"שגיאה בשמירת projects: {e}")
 
 
 def next_projects_csv_id(existing_rows: list[dict]) -> int:
