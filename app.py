@@ -31,17 +31,6 @@ try:
     client = init_connection()
     SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
     spreadsheet = client.open_by_key(SHEET_ID)
-    st.title("🛠️ מצב דיבאג - מה הרובוט רואה?")
-    try:
-        ws = spreadsheet.worksheet('projects')
-        raw_data = ws.get_all_values()
-        st.success(f"החיבור עובד! נמצאו {len(raw_data)} שורות בגליון הפרויקטים.")
-        if raw_data:
-            st.write("הכותרות שנקראו:", raw_data[0])
-        st.dataframe(raw_data)
-    except Exception as e:
-        st.error(f"שגיאה חמורה בקריאת נתונים: {e}")
-    st.stop()  # עוצר את המשך טעינת הדף בכוונה
 except Exception as e:
     spreadsheet = None
     st.error(f"שגיאה בהתחברות לגוגל שיטס: {e}")
@@ -141,6 +130,18 @@ def _normalize_records_to_columns(records: list[dict], expected_columns: list[st
     return result
 
 
+def _read_worksheet_safe(worksheet, expected_columns: list[str]) -> pd.DataFrame:
+    """קריאה בטוחה מגיליון גוגל שיטס - תומך בכותרות בעברית, מונע קריסות של gspread."""
+    raw_data = worksheet.get_all_values()
+    if len(raw_data) > 1:
+        df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
+    else:
+        df = pd.DataFrame(columns=raw_data[0] if raw_data else [])
+    df = df.fillna('')
+    df = df.reindex(columns=expected_columns, fill_value='')
+    return df
+
+
 def _ensure_messages_csv() -> None:
     """וידוא שקיים גיליון messages בגוגל שיטס - תקשורת מהירה."""
     if spreadsheet is None:
@@ -163,13 +164,9 @@ def _read_messages_df() -> pd.DataFrame:
     _ensure_messages_csv()
     try:
         worksheet = spreadsheet.worksheet('messages')
-        records = worksheet.get_all_records()
-        normalized = _normalize_records_to_columns(records, MESSAGES_COLUMNS)
-        df = pd.DataFrame(normalized, columns=MESSAGES_COLUMNS) if normalized else pd.DataFrame(columns=MESSAGES_COLUMNS)
-        df = df.fillna('')
-        return df
+        return _read_worksheet_safe(worksheet, MESSAGES_COLUMNS)
     except Exception as e:
-        st.error(f"שגיאה בשליפת נתונים: {e}")
+        st.error(f"שגיאה בשליפת נתונים (messages): {e}")
         return pd.DataFrame(columns=MESSAGES_COLUMNS)
 
 
@@ -933,13 +930,10 @@ def read_daily_tasks() -> list[dict]:
     _ensure_tasks_csv_schema()
     try:
         worksheet = spreadsheet.worksheet('tasks')
-        records = worksheet.get_all_records()
-        rows = _normalize_records_to_columns(records, DAILY_TASKS_COLUMNS)
-        df = pd.DataFrame(rows, columns=DAILY_TASKS_COLUMNS) if rows else pd.DataFrame(columns=DAILY_TASKS_COLUMNS)
-        df = df.fillna('')
+        df = _read_worksheet_safe(worksheet, DAILY_TASKS_COLUMNS)
         return df.to_dict(orient='records')
     except Exception as e:
-        st.error(f"שגיאה בשליפת נתונים: {e}")
+        st.error(f"שגיאה בשליפת נתונים (tasks): {e}")
         return []
 
 
@@ -1072,18 +1066,16 @@ def read_projects_csv() -> list[dict]:
     _ensure_projects_csv_schema()
     try:
         worksheet = spreadsheet.worksheet('projects')
-        records = worksheet.get_all_records()
-        rows = _normalize_records_to_columns(records, PROJECTS_CSV_COLUMNS)
+        df = _read_worksheet_safe(worksheet, PROJECTS_CSV_COLUMNS)
+        rows = df.to_dict(orient='records')
         for r in rows:
             status = r.get("Status") or "Active"
             if status not in PROJECTS_CSV_STATUSES:
                 status = "Active"
             r["Status"] = status
-        df = pd.DataFrame(rows, columns=PROJECTS_CSV_COLUMNS) if rows else pd.DataFrame(columns=PROJECTS_CSV_COLUMNS)
-        df = df.fillna('')
-        return df.to_dict(orient='records')
+        return rows
     except Exception as e:
-        st.error(f"שגיאה בשליפת נתונים: {e}")
+        st.error(f"שגיאה בשליפת נתונים (projects): {e}")
         return []
 
 
@@ -1414,24 +1406,21 @@ def read_quotes_csv() -> list[dict]:
     _ensure_quotes_csv_schema()
     try:
         worksheet = spreadsheet.worksheet('quotes')
-        records = worksheet.get_all_records()
-        rows = _normalize_records_to_columns(records, QUOTES_CSV_COLUMNS)
+        df = _read_worksheet_safe(worksheet, QUOTES_CSV_COLUMNS)
         result = []
-        for r in rows:
+        for _, row in df.iterrows():
             normalized = {}
             for c in QUOTES_CSV_COLUMNS:
-                v = r.get(c)
+                v = row.get(c)
                 if v is None or (isinstance(v, str) and v.strip().lower() in ("nan", "none")):
                     normalized[c] = ""
                 else:
                     s = str(v).strip()
                     normalized[c] = "" if s.lower() in ("nan", "none") else s
             result.append(normalized)
-        df = pd.DataFrame(result, columns=QUOTES_CSV_COLUMNS) if result else pd.DataFrame(columns=QUOTES_CSV_COLUMNS)
-        df = df.fillna('')
-        return df.to_dict(orient='records')
+        return result
     except Exception as e:
-        st.error(f"שגיאה בשליפת נתונים: {e}")
+        st.error(f"שגיאה בשליפת נתונים (quotes): {e}")
         return []
 
 
