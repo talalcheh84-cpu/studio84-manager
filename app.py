@@ -31,6 +31,17 @@ try:
     client = init_connection()
     SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
     spreadsheet = client.open_by_key(SHEET_ID)
+    st.title("🛠️ מצב דיבאג - מה הרובוט רואה?")
+    try:
+        ws = spreadsheet.worksheet('projects')
+        raw_data = ws.get_all_values()
+        st.success(f"החיבור עובד! נמצאו {len(raw_data)} שורות בגליון הפרויקטים.")
+        if raw_data:
+            st.write("הכותרות שנקראו:", raw_data[0])
+        st.dataframe(raw_data)
+    except Exception as e:
+        st.error(f"שגיאה חמורה בקריאת נתונים: {e}")
+    st.stop()  # עוצר את המשך טעינת הדף בכוונה
 except Exception as e:
     spreadsheet = None
     st.error(f"שגיאה בהתחברות לגוגל שיטס: {e}")
