@@ -154,19 +154,10 @@ def _read_worksheet_safe(worksheet, expected_columns: list[str]) -> pd.DataFrame
 
 
 def _ensure_messages_csv() -> None:
-    """וידוא שקיים גיליון messages בגוגל שיטס - תקשורת מהירה."""
+    """וידוא שקיים גיליון messages בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
     if spreadsheet is None:
         return
-    try:
-        spreadsheet.worksheet('messages')
-    except Exception:
-        try:
-            spreadsheet.add_worksheet(title='messages', rows=100, cols=len(MESSAGES_COLUMNS))
-            worksheet = spreadsheet.worksheet('messages')
-            worksheet.update([MESSAGES_COLUMNS], 'A1')
-            st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת גיליון messages: {e}")
+    spreadsheet.worksheet('messages')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
 @st.cache_data(ttl=15)
@@ -631,19 +622,10 @@ CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבו�
 
 
 def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
-    """וידוא שקיים גיליון בגוגל שיטס עם העמודות הנדרשות."""
+    """וידוא שקיים גיליון בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
     if spreadsheet is None:
         return
-    try:
-        spreadsheet.worksheet(sheet_name)
-    except Exception:
-        try:
-            spreadsheet.add_worksheet(title=sheet_name, rows=200, cols=len(columns))
-            worksheet = spreadsheet.worksheet(sheet_name)
-            worksheet.update([columns], 'A1')
-            st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת גיליון {sheet_name}: {e}")
+    spreadsheet.worksheet(sheet_name)  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
 @st.cache_data(ttl=15)
@@ -786,17 +768,16 @@ _LEGACY_PROJECT_STATUS_MAP = {
 
 
 @st.cache_data(ttl=15)
-def read_projects_db() -> list[dict]:
-    """קריאת פרויקטים מגיליון projects_db בגוגל שיטס (מוניטור, Task Board)."""
+def read_projects() -> list[dict]:
+    """קריאת פרויקטים מגיליון projects בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
         st.error("שגיאת קריאה: אין חיבור לגוגל שיטס.")
         return []
-    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
+    _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
     try:
-        worksheet = spreadsheet.worksheet('projects_db')
+        worksheet = spreadsheet.worksheet('projects')
         df = _read_worksheet_safe(worksheet, PROJECTS_DB_COLUMNS)
-        if not df.empty and hasattr(df.columns, 'str'):
-            df.columns = df.columns.str.strip()
+        df.columns = df.columns.str.strip()
         rows = df.to_dict(orient='records')
         for r in rows:
             status = (r.get("Status") or DEFAULT_PROJECT_STATUS).strip()
@@ -810,14 +791,14 @@ def read_projects_db() -> list[dict]:
         return []
 
 
-def write_projects_db(rows: list[dict]) -> None:
-    """שמירת פרויקטים לגיליון projects_db בגוגל שיטס."""
+def write_projects(rows: list[dict]) -> None:
+    """שמירת פרויקטים לגיליון projects בגוגל שיטס."""
     if spreadsheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
         return
-    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
+    _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
     try:
-        worksheet = spreadsheet.worksheet('projects_db')
+        worksheet = spreadsheet.worksheet('projects')
         worksheet.clear()
         data = [PROJECTS_DB_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_DB_COLUMNS] for r in rows]
         if data:
@@ -825,34 +806,34 @@ def write_projects_db(rows: list[dict]) -> None:
         st.cache_data.clear()
         st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת projects_db: {e}")
+        st.warning(f"שגיאה בשמירת projects: {e}")
 
 
 @st.cache_data(ttl=15)
-def read_tasks_log() -> list[dict]:
-    """קריאת משימות מגיליון tasks_log בגוגל שיטס (Task Board)."""
+def read_tasks() -> list[dict]:
+    """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board)."""
     if spreadsheet is None:
         return []
-    _ensure_sheet('tasks_log', TASKS_LOG_COLUMNS)
+    _ensure_sheet('tasks', TASKS_LOG_COLUMNS)
     try:
-        worksheet = spreadsheet.worksheet('tasks_log')
+        worksheet = spreadsheet.worksheet('tasks')
         df = _read_worksheet_safe(worksheet, TASKS_LOG_COLUMNS)
         if not df.empty and hasattr(df.columns, 'str'):
             df.columns = df.columns.str.strip()
         return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת tasks_log: {e}")
+        st.warning(f"שגיאה בקריאת tasks: {e}")
         return []
 
 
-def write_tasks_log(rows: list[dict]) -> None:
-    """שמירת משימות לגיליון tasks_log בגוגל שיטס."""
+def write_tasks(rows: list[dict]) -> None:
+    """שמירת משימות לגיליון tasks בגוגל שיטס."""
     if spreadsheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
         return
-    _ensure_sheet('tasks_log', TASKS_LOG_COLUMNS)
+    _ensure_sheet('tasks', TASKS_LOG_COLUMNS)
     try:
-        worksheet = spreadsheet.worksheet('tasks_log')
+        worksheet = spreadsheet.worksheet('tasks')
         worksheet.clear()
         data = [TASKS_LOG_COLUMNS] + [[str(r.get(c, "") or "") for c in TASKS_LOG_COLUMNS] for r in rows]
         if data:
@@ -860,23 +841,14 @@ def write_tasks_log(rows: list[dict]) -> None:
         st.cache_data.clear()
         st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת tasks_log: {e}")
+        st.warning(f"שגיאה בשמירת tasks: {e}")
 
 
 def _ensure_tasks_csv_schema() -> None:
-    """וידוא שקיים גיליון tasks בגוגל שיטס - משימות יומיות."""
+    """וידוא שקיים גיליון tasks בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
     if spreadsheet is None:
         return
-    try:
-        spreadsheet.worksheet('tasks')
-    except Exception:
-        try:
-            spreadsheet.add_worksheet(title='tasks', rows=100, cols=len(DAILY_TASKS_COLUMNS))
-            worksheet = spreadsheet.worksheet('tasks')
-            worksheet.update([DAILY_TASKS_COLUMNS], 'A1')
-            st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת גיליון tasks: {e}")
+    spreadsheet.worksheet('tasks')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
 @st.cache_data(ttl=15)
@@ -974,9 +946,9 @@ def append_project_record(
     dropbox_path: str,
     budget_amount: str | float = "",
 ) -> None:
-    """Append a new project row to projects_db (Google Sheets)."""
-    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
-    existing_rows = read_projects_db()
+    """Append a new project row to projects (Google Sheets)."""
+    _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
+    existing_rows = read_projects()
     project_id = next_project_id(existing_rows)
 
     clean_status = status if status in ALLOWED_PROJECT_STATUSES else DEFAULT_PROJECT_STATUS
@@ -1001,23 +973,14 @@ def append_project_record(
     }
 
     existing_rows.append(row)
-    write_projects_db(existing_rows)
+    write_projects(existing_rows)
 
 
 def _ensure_projects_csv_schema() -> None:
-    """וידוא שקיים גיליון projects בגוגל שיטס - פרויקטים פעילים."""
+    """וידוא שקיים גיליון projects בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
     if spreadsheet is None:
         return
-    try:
-        spreadsheet.worksheet('projects')
-    except Exception:
-        try:
-            spreadsheet.add_worksheet(title='projects', rows=100, cols=len(PROJECTS_CSV_COLUMNS))
-            worksheet = spreadsheet.worksheet('projects')
-            worksheet.update([PROJECTS_CSV_COLUMNS], 'A1')
-            st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת גיליון projects: {e}")
+    spreadsheet.worksheet('projects')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
 @st.cache_data(ttl=15)
@@ -1121,9 +1084,9 @@ def _project_exists_in_projects_csv(client: str, project: str) -> bool:
     return False
 
 
-def _project_exists_in_projects_db(client: str, project_name: str) -> bool:
-    """Check if client+project already exists in projects_db (מוניטור וטבלת פרויקטים)."""
-    rows = read_projects_db()
+def _project_exists_in_projects(client: str, project_name: str) -> bool:
+    """Check if client+project already exists in projects (מוניטור וטבלת פרויקטים)."""
+    rows = read_projects()
     c = (client or "").strip()
     p = (project_name or "").strip()
     for r in rows:
@@ -1132,20 +1095,20 @@ def _project_exists_in_projects_db(client: str, project_name: str) -> bool:
     return False
 
 
-def _ensure_project_active_in_projects_db(
+def _ensure_project_active_in_projects(
     client: str,
     project_name: str,
     status: str = "בעבודה",
 ) -> bool:
-    """Update project status in projects_db to active status. Returns True if updated."""
-    rows = read_projects_db()
+    """Update project status in projects to active status. Returns True if updated."""
+    rows = read_projects()
     c = (client or "").strip()
     p = (project_name or "").strip()
     for r in rows:
         if (r.get("Client") or "").strip() == c and (r.get("Project Name") or "").strip() == p:
             if (r.get("Status") or "").strip() != status:
                 r["Status"] = status
-                write_projects_db(rows)
+                write_projects(rows)
                 return True
             return False
     return False
@@ -1235,19 +1198,10 @@ def _quote_key(client: str, project: str, version: str) -> tuple[str, str, str]:
 
 
 def _ensure_quotes_csv_schema() -> None:
-    """וידוא שקיים גיליון quotes בגוגל שיטס - הצעות מחיר (נתוני טופס מלא)."""
+    """וידוא שקיים גיליון quotes בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
     if spreadsheet is None:
         return
-    try:
-        spreadsheet.worksheet('quotes')
-    except Exception:
-        try:
-            spreadsheet.add_worksheet(title='quotes', rows=100, cols=len(QUOTES_CSV_COLUMNS))
-            worksheet = spreadsheet.worksheet('quotes')
-            worksheet.update([QUOTES_CSV_COLUMNS], 'A1')
-            st.cache_data.clear()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת גיליון quotes: {e}")
+    spreadsheet.worksheet('quotes')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
 @st.cache_data(ttl=15)
@@ -2660,14 +2614,14 @@ def show_quotes_management_page() -> None:
                         kickoff_budget = st.text_input("תקציב שעות (אופציונלי)", key=f"kickoff_budget_{kickoff_key}", placeholder="")
                     if st.button("➕ הוסף לפרויקטים פעילים", key=f"kickoff_add_projects_{kickoff_key}"):
                         exists_csv = _project_exists_in_projects_csv(client, project)
-                        exists_db = _project_exists_in_projects_db(client, project)
+                        exists_db = _project_exists_in_projects(client, project)
                         if exists_db:
-                            # הפרויקט כבר ב-projects_db – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
-                            _ensure_project_active_in_projects_db(client, project, status="בעבודה")
+                            # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
+                            _ensure_project_active_in_projects(client, project, status="בעבודה")
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv:
-                            # הפרויקט ב-projects.csv בלבד – הוסף ל-projects_db כדי שיופיע במוניטור וב-Task Board
+                            # הפרויקט ב-projects.csv בלבד – הוסף ל-projects כדי שיופיע במוניטור וב-Task Board
                             row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
                             budget_amt = _extract_total_from_quote_row(row_dict)
                             today_str = date.today().strftime("%d/%m/%Y")
@@ -2692,7 +2646,7 @@ def show_quotes_management_page() -> None:
                             row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
                             budget_amt = _extract_total_from_quote_row(row_dict)
                             append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
-                            # הוספה ל-projects_db.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
+                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             today_str = date.today().strftime("%d/%m/%Y")
                             dropbox_path = f"Projects/{safe_client}/{safe_project}"
                             manager_default = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
@@ -2862,7 +2816,7 @@ def show_quotes_management_page() -> None:
                             email_body,
                         )
 
-                        st.success("הפרויקט נפתח ונשמר בגיליון projects_db.")
+                        st.success("הפרויקט נפתח ונשמר בגיליון projects.")
                         col_gmail_proj, col_outlook_proj = st.columns(2)
                         with col_gmail_proj:
                             st.link_button("📧 פתח טיוטה ב-Gmail למנהל הפרויקט", gmail_url)
@@ -3224,14 +3178,14 @@ def show_quotes_management_page() -> None:
                         kickoff_budget_fb = st.text_input("תקציב שעות (אופציונלי)", key=f"kickoff_budget_{kickoff_key_fb}", placeholder="")
                     if st.button("➕ הוסף לפרויקטים פעילים", key=f"kickoff_add_projects_{kickoff_key_fb}"):
                         exists_csv_fb = _project_exists_in_projects_csv(client_val, project_val)
-                        exists_db_fb = _project_exists_in_projects_db(client_val, project_val)
+                        exists_db_fb = _project_exists_in_projects(client_val, project_val)
                         if exists_db_fb:
-                            # הפרויקט כבר ב-projects_db – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
-                            _ensure_project_active_in_projects_db(client_val, project_val, status="בעבודה")
+                            # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
+                            _ensure_project_active_in_projects(client_val, project_val, status="בעבודה")
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv_fb:
-                            # הפרויקט ב-projects.csv בלבד – הוסף ל-projects_db כדי שיופיע במוניטור וב-Task Board
+                            # הפרויקט ב-projects.csv בלבד – הוסף ל-projects כדי שיופיע במוניטור וב-Task Board
                             budget_amt_fb = _extract_total_from_quote_row(r)
                             today_str_fb = date.today().strftime("%d/%m/%Y")
                             dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
@@ -3254,7 +3208,7 @@ def show_quotes_management_page() -> None:
                             deadline_str_fb = kickoff_deadline_fb.strftime('%d/%m/%Y')
                             budget_amt_fb = _extract_total_from_quote_row(r)
                             append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
-                            # הוספה ל-projects_db.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
+                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             today_str_fb = date.today().strftime("%d/%m/%Y")
                             dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
                             manager_default_fb = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
@@ -3329,7 +3283,7 @@ ACTIVE_PROJECT_STATUSES = ("בעבודה", "ממתין להתחלה")
 
 def _get_active_projects_options() -> list[str]:
     """Return list of 'Client | Project Name' for projects. זמנית: מציג את כל הפרויקטים (ללא סינון סטטוס)."""
-    rows = read_projects_db()
+    rows = read_projects()
     options = []
     # זמנית: הצגת כל הפרויקטים (ביטול סינון Status == Active)
     # active_normalized = [s.strip().lower() for s in ACTIVE_PROJECT_STATUSES]
@@ -3345,7 +3299,7 @@ def _get_active_projects_options() -> list[str]:
 
 def _compute_project_monitor_stats() -> dict[str, int | float]:
     """Compute project counts and budget sums for sidebar monitor by status category."""
-    rows = read_projects_db()
+    rows = read_projects()
     active_statuses = ("בעבודה", "ממתין להתחלה")
     feedback_statuses = ("נשלח לסבב הערות 1", "נשלח לסבב הערות 2", "ממתין לאדריכל/לקוח")
     frozen_statuses = ("הוקפא",)
@@ -3418,7 +3372,7 @@ def show_tasks_page() -> None:
 
     if sub_nav == "טבלת פרויקטים":
         st.subheader("טבלת פרויקטים")
-        projects_rows = read_projects_db()
+        projects_rows = read_projects()
         if not projects_rows:
             st.info("אין פרויקטים. פתח פרויקט מתוך הצעה מאושרת בלשונית ניהול הצעות.")
         else:
@@ -3466,7 +3420,7 @@ def show_tasks_page() -> None:
                         updated = edited_projects.to_dict(orient="records")
                     else:
                         # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימה המלאה
-                        full_rows = read_projects_db()
+                        full_rows = read_projects()
                         edited_records = edited_projects.to_dict(orient="records")
                         edited_by_key = {(str(r.get("Client", "")), str(r.get("Project Name", ""))): r for r in edited_records}
                         for i, row in enumerate(full_rows):
@@ -3474,7 +3428,7 @@ def show_tasks_page() -> None:
                             if key in edited_by_key:
                                 full_rows[i] = edited_by_key[key]
                         updated = full_rows
-                    write_projects_db(updated)
+                    write_projects(updated)
                     st.success("השינויים נשמרו בהצלחה!")
                     st.rerun()
 
@@ -3486,7 +3440,7 @@ def show_tasks_page() -> None:
             a = (task_assignee or "").strip()
             return a == sel or a.startswith(sel + " ") or a.startswith(sel + "-")
 
-        tasks_rows_monitor = read_tasks_log()
+        tasks_rows_monitor = read_tasks()
         today_dt = date.today()
         # זמנית: הצגת כל המשימות (ביטול סינון Status != Done)
         open_tasks = list(tasks_rows_monitor)
@@ -3513,7 +3467,7 @@ def show_tasks_page() -> None:
                 if str(t.get("Task ID") or "").strip() == str(task_id or "").strip():
                     t["Status"] = "Done"
                     break
-            write_tasks_log(tasks_rows_monitor)
+            write_tasks(tasks_rows_monitor)
             st.rerun()
 
         team_list = [n for n in TEAM_DISPLAY_NAMES if n and str(n).strip()]
@@ -3550,7 +3504,7 @@ def show_tasks_page() -> None:
         st.subheader("הוספת משימה")
         projects_options = _get_active_projects_options()
         if not projects_options:
-            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects_db עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
+            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
         else:
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -3571,7 +3525,7 @@ def show_tasks_page() -> None:
                 elif not selected_project:
                     st.warning("נא לבחור פרויקט.")
                 else:
-                    existing = read_tasks_log()
+                    existing = read_tasks()
                     task_id = next_task_id(existing)
                     row = {
                         "Task ID": str(task_id),
@@ -3586,7 +3540,7 @@ def show_tasks_page() -> None:
                         "Flexible": "1" if is_flexible else "0",
                     }
                     existing.append(row)
-                    write_tasks_log(existing)
+                    write_tasks(existing)
                     st.success("המשימה נוספה בהצלחה!")
                     st.rerun()
 
@@ -3612,8 +3566,8 @@ def show_tasks_page() -> None:
                             project_key_pipe = f"{client} | {project_name}"
                             project_key_dash = f"{client} - {project_name}"
 
-                            # 1. projects_db (גוגל שיטס)
-                            db_rows = read_projects_db()
+                            # 1. projects (גוגל שיטס)
+                            db_rows = read_projects()
                             db_updated = [
                                 r for r in db_rows
                                 if not (
@@ -3622,7 +3576,7 @@ def show_tasks_page() -> None:
                                 )
                             ]
                             if len(db_updated) < len(db_rows):
-                                write_projects_db(db_updated)
+                                write_projects(db_updated)
 
                             # 2. projects.csv
                             csv_rows = read_projects_csv()
@@ -3648,14 +3602,14 @@ def show_tasks_page() -> None:
                             if len(quotes_updated) < len(quotes_rows):
                                 write_quotes_log(quotes_updated)
 
-                            # 4. tasks_log (גוגל שיטס)
-                            tasks_rows = read_tasks_log()
+                            # 4. tasks (גוגל שיטס)
+                            tasks_rows = read_tasks()
                             tasks_updated = [
                                 t for t in tasks_rows
                                 if (t.get("Project") or "").strip() not in (project_key_pipe, project_key_dash)
                             ]
                             if len(tasks_updated) < len(tasks_rows):
-                                write_tasks_log(tasks_updated)
+                                write_tasks(tasks_updated)
 
                             # 5. project_contacts (גוגל שיטס)
                             contacts_rows = read_project_contacts()
@@ -3673,7 +3627,7 @@ def show_tasks_page() -> None:
 
         st.divider()
         st.subheader("טבלת משימות")
-        tasks_rows = read_tasks_log()
+        tasks_rows = read_tasks()
         if not tasks_rows:
             st.info("אין משימות. הוסף משימה חדשה למעלה.")
         else:
@@ -3720,7 +3674,7 @@ def show_tasks_page() -> None:
                         updated = edited_df.to_dict(orient="records")
                     else:
                         # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימת המשימות המלאה
-                        full_rows = read_tasks_log()
+                        full_rows = read_tasks()
                         edited_records = edited_df.to_dict(orient="records")
                         edited_by_id = {str(r.get("Task ID", "")): r for r in edited_records}
                         for i, row in enumerate(full_rows):
@@ -3728,7 +3682,7 @@ def show_tasks_page() -> None:
                             if tid in edited_by_id:
                                 full_rows[i] = edited_by_id[tid]
                         updated = full_rows
-                    write_tasks_log(updated)
+                    write_tasks(updated)
                     st.success("השינויים נשמרו בהצלחה!")
 
         # --- אנשי קשר לפרויקט ---
@@ -3862,7 +3816,7 @@ def show_tasks_page() -> None:
 
         # טעינת משימות מוגנת - זמנית: הצגת כל המשימות (ללא סינון Status)
         try:
-            tasks_rows = read_tasks_log()
+            tasks_rows = read_tasks()
             df_tasks = pd.DataFrame(tasks_rows) if tasks_rows else pd.DataFrame()
             if not df_tasks.empty and hasattr(df_tasks.columns, 'str'):
                 df_tasks.columns = df_tasks.columns.str.strip()
@@ -4492,7 +4446,7 @@ def main() -> None:
     main_nav = st.sidebar.radio("ניווט ראשי:", ["📊 חדר מצב (מוניטור פרויקטים)", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"])
 
     # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
-    projects_rows_debug = read_projects_db()
+    projects_rows_debug = read_projects()
     df_projects = pd.DataFrame(projects_rows_debug, columns=PROJECTS_DB_COLUMNS)
     df_projects = df_projects.fillna('')
 
@@ -4535,7 +4489,7 @@ def main() -> None:
         if st.session_state.monitor_filter is not None:
             with st.container(border=True):
                 st.subheader(f"🔎 תצוגת חתך: {st.session_state.monitor_title}")
-                projects_rows = read_projects_db()
+                projects_rows = read_projects()
                 df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
                 df_projects = df_projects.fillna('')
                 # זמנית: תמיכה ב-Show All - הצגת כל הפרויקטים ללא סינון
@@ -4571,7 +4525,7 @@ def main() -> None:
                     if not edited_filtered_df.equals(filtered_df):
                         df_projects.update(edited_filtered_df)
                         updated = df_projects.to_dict(orient="records")
-                        write_projects_db(updated)
+                        write_projects(updated)
                         st.success("הנתונים עודכנו בהצלחה!")
                         st.rerun()
                     st.markdown("**פעולות מהירות:**")
