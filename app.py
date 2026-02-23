@@ -212,23 +212,27 @@ def _render_quick_comm_sidebar_form() -> None:
             "סוג הודעה:",
             ["⚡ משימה מהירה", "🤝 זימון ישיבה", "📢 עדכון כללי"],
         )
-        msg_recipient = st.selectbox("נמען:", ["כולם"] + team_list)
+        msg_recipients = st.multiselect("נמען:", ["כולם"] + team_list, default=["כולם"])
         msg_content = st.text_input("תוכן ההודעה:")
         submit_msg = st.form_submit_button("שלח הודעה")
     if submit_msg and msg_content:
-        _ensure_messages_csv()
-        current_user = (st.session_state.get("current_user") or "צוות").strip()
-        new_row = {
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "Sender": current_user,
-            "Recipient": msg_recipient,
-            "Type": msg_type,
-            "Message": msg_content.strip(),
-        }
-        df = _read_messages_df()
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        _write_messages_df(df)
-        st.rerun()
+        if not msg_recipients:
+            st.sidebar.warning("נא לבחור לפחות נמען אחד.")
+        else:
+            _ensure_messages_csv()
+            current_user = (st.session_state.get("current_user") or "צוות").strip()
+            recipient_str = "כולם" if "כולם" in msg_recipients else ", ".join(msg_recipients)
+            new_row = {
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Sender": current_user,
+                "Recipient": recipient_str,
+                "Type": msg_type,
+                "Message": msg_content.strip(),
+            }
+            df = _read_messages_df()
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            _write_messages_df(df)
+            st.rerun()
 
 
 def _render_quick_comm_notifications() -> None:
@@ -249,6 +253,7 @@ def _render_quick_comm_notifications() -> None:
             continue
         recipient = (row.get("Recipient") or "").strip()
         if recipient != "כולם":
+            # נמענים מרובים נשמרים כמחרוזת מופרדת בפסיקים - clean_name_for_match מסיר פסיקים
             if not safe_current_user or safe_current_user not in clean_name_for_match(recipient):
                 continue
         msg_type = (row.get("Type") or "").strip()
@@ -486,6 +491,8 @@ WHATSAPP_ERAN = "972547641984"
 
 # סיסמת מנהל (Admin)
 ADMIN_PASSWORD = "8484"
+# שמות/תפקידים שמוגדרים כמנהלים - לצורכי הרשאות וסינון תצוגה
+ADMIN_NAMES = {"Admin (טלי / ערן)", "Admin", "טלי", "ערן"}
 
 
 st.set_page_config(page_title="דשבורד ניהול סטודיו", layout="wide")
@@ -3383,38 +3390,55 @@ def show_tasks_page() -> None:
         else:
             df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
             df_projects = df_projects.fillna('')
-            edited_projects = st.data_editor(
-                df_projects,
-                hide_index=True,
-                use_container_width=True,
-                disabled=[c for c in PROJECTS_DB_COLUMNS if c not in ("Status", "Manager", "Team")],
-                column_config={
-                    "Status": st.column_config.SelectboxColumn(
-                        "סטטוס",
-                        options=ALLOWED_PROJECT_STATUSES,
-                        required=True,
-                    ),
-                    "Manager": st.column_config.SelectboxColumn(
-                        "מנהל",
-                        options=PROJECT_MANAGERS,
-                    ),
-                    "Team": st.column_config.SelectboxColumn(
-                        "צוות",
-                        options=PROJECT_TEAM_MEMBERS,
-                    ),
-                    'היקף כספי (₪)': st.column_config.NumberColumn(
-                        "היקף כספי (₪)",
-                        format="₪%d",
-                        default=0,
-                    ),
-                },
-                key="projects_editor",
-            )
-            if st.button("שמור שינויים בפרויקטים", type="primary", key="save_projects_btn"):
-                updated = edited_projects.to_dict(orient="records")
-                write_projects_db(updated)
-                st.success("השינויים נשמרו בהצלחה!")
-                st.rerun()
+            if not is_admin():
+                current_user = _get_assignee_for_current_user()
+                df_projects = df_projects[df_projects["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))]
+            if df_projects.empty:
+                st.info("אין פרויקטים להצגה (אין פרויקטים שבהם אתה חבר צוות).")
+            else:
+                edited_projects = st.data_editor(
+                    df_projects,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=[c for c in PROJECTS_DB_COLUMNS if c not in ("Status", "Manager", "Team")],
+                    column_config={
+                        "Status": st.column_config.SelectboxColumn(
+                            "סטטוס",
+                            options=ALLOWED_PROJECT_STATUSES,
+                            required=True,
+                        ),
+                        "Manager": st.column_config.SelectboxColumn(
+                            "מנהל",
+                            options=PROJECT_MANAGERS,
+                        ),
+                        "Team": st.column_config.SelectboxColumn(
+                            "צוות",
+                            options=PROJECT_TEAM_MEMBERS,
+                        ),
+                        'היקף כספי (₪)': st.column_config.NumberColumn(
+                            "היקף כספי (₪)",
+                            format="₪%d",
+                            default=0,
+                        ),
+                    },
+                    key="projects_editor",
+                )
+                if st.button("שמור שינויים בפרויקטים", type="primary", key="save_projects_btn"):
+                    if is_admin():
+                        updated = edited_projects.to_dict(orient="records")
+                    else:
+                        # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימה המלאה
+                        full_rows = read_projects_db()
+                        edited_records = edited_projects.to_dict(orient="records")
+                        edited_by_key = {(str(r.get("Client", "")), str(r.get("Project Name", ""))): r for r in edited_records}
+                        for i, row in enumerate(full_rows):
+                            key = (str(row.get("Client", "")), str(row.get("Project Name", "")))
+                            if key in edited_by_key:
+                                full_rows[i] = edited_by_key[key]
+                        updated = full_rows
+                    write_projects_db(updated)
+                    st.success("השינויים נשמרו בהצלחה!")
+                    st.rerun()
 
     elif sub_nav == "רשימת משימות (Task Board)":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
@@ -3431,6 +3455,10 @@ def show_tasks_page() -> None:
             t for t in tasks_rows_monitor
             if (t.get("Status") or "").strip() != "Done"
         ]
+        # משתמש שאינו מנהל - סינון לפי עמודת האחראי (Assignee)
+        if not is_admin():
+            current_user = _get_assignee_for_current_user()
+            open_tasks = [t for t in open_tasks if _assignee_matches_task(t.get("Assignee") or "", current_user)]
         df_tasks = pd.DataFrame(open_tasks) if open_tasks else pd.DataFrame()
         if not df_tasks.empty and "Due Date" in df_tasks.columns:
             df_tasks["due_date_parsed"] = pd.to_datetime(df_tasks["Due Date"], errors="coerce").dt.date
@@ -3611,31 +3639,48 @@ def show_tasks_page() -> None:
             st.info("אין משימות. הוסף משימה חדשה למעלה.")
         else:
             df = pd.DataFrame(tasks_rows, columns=TASKS_LOG_COLUMNS)
-            editable_cols = ["Status", "Priority", "Notes"]
-            disabled_cols = [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
-            edited_df = st.data_editor(
-                df,
-                hide_index=True,
-                use_container_width=True,
-                disabled=disabled_cols,
-                column_config={
-                    "Status": st.column_config.SelectboxColumn(
-                        "Status",
-                        options=TASK_STATUSES,
-                        required=True,
-                    ),
-                    "Priority": st.column_config.SelectboxColumn(
-                        "עדיפות",
-                        options=TASK_PRIORITIES,
-                        required=True,
-                    ),
-                },
-                key="tasks_editor",
-            )
-            if st.button("שמור שינויים", type="primary", key="save_tasks_btn"):
-                updated = edited_df.to_dict(orient="records")
-                write_tasks_log(updated)
-                st.success("השינויים נשמרו בהצלחה!")
+            if not is_admin():
+                current_user = _get_assignee_for_current_user()
+                df = df[df["Assignee"].fillna("").apply(lambda a: _assignee_matches_task(str(a), current_user))]
+            if df.empty and not is_admin():
+                st.info("אין משימות להצגה (אין משימות שבהן אתה האחראי).")
+            else:
+                editable_cols = ["Status", "Priority", "Notes"]
+                disabled_cols = [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
+                edited_df = st.data_editor(
+                    df,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=disabled_cols,
+                    column_config={
+                        "Status": st.column_config.SelectboxColumn(
+                            "Status",
+                            options=TASK_STATUSES,
+                            required=True,
+                        ),
+                        "Priority": st.column_config.SelectboxColumn(
+                            "עדיפות",
+                            options=TASK_PRIORITIES,
+                            required=True,
+                        ),
+                    },
+                    key="tasks_editor",
+                )
+                if st.button("שמור שינויים", type="primary", key="save_tasks_btn"):
+                    if is_admin():
+                        updated = edited_df.to_dict(orient="records")
+                    else:
+                        # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימת המשימות המלאה
+                        full_rows = read_tasks_log()
+                        edited_records = edited_df.to_dict(orient="records")
+                        edited_by_id = {str(r.get("Task ID", "")): r for r in edited_records}
+                        for i, row in enumerate(full_rows):
+                            tid = str(row.get("Task ID", ""))
+                            if tid in edited_by_id:
+                                full_rows[i] = edited_by_id[tid]
+                        updated = full_rows
+                    write_tasks_log(updated)
+                    st.success("השינויים נשמרו בהצלחה!")
 
         # --- אנשי קשר לפרויקט ---
         st.divider()
@@ -4009,6 +4054,24 @@ def show_login_screen() -> bool:
 def _get_assignee_for_current_user() -> str:
     """מחזיר את ה-Assignee המתאים למשתמש הנוכחי (לסינון משימות)."""
     return (st.session_state.get("current_user") or "צוות").strip()
+
+
+def is_admin() -> bool:
+    """מזהה אם המשתמש המחובר הוא מנהל (Admin או שמות המנהלים)."""
+    user_type = st.session_state.get("user_type")
+    if user_type == "admin":
+        return True
+    current_user = (st.session_state.get("current_user") or "").strip()
+    return current_user in ADMIN_NAMES
+
+
+def _user_in_team(team_value: str, current_user: str) -> bool:
+    """בודק אם שם המשתמש מופיע בעמודת Team (תומך ברשימה מופרדת בפסיקים)."""
+    if not current_user or not team_value:
+        return False
+    safe_user = clean_name_for_match(current_user)
+    safe_team = clean_name_for_match(team_value)
+    return bool(safe_user) and safe_user in safe_team
 
 
 def _render_daily_tasks_editor(assignee: str, key_prefix: str = "daily_tasks") -> None:
@@ -4427,6 +4490,11 @@ def main() -> None:
                 else:
                     mask = pd.Series([False] * len(df_projects), index=df_projects.index)
                 filtered_df = df_projects[mask]
+                # משתמש שאינו מנהל - סינון לפי עמודת Team
+                if not is_admin():
+                    current_user = _get_assignee_for_current_user()
+                    team_mask = filtered_df["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))
+                    filtered_df = filtered_df[team_mask]
                 if filtered_df.empty:
                     st.info("לא נמצאו פרויקטים פעילים." if (st.session_state.monitor_filter == ["בעבודה", "ממתין להתחלה"]) else f"לא נמצאו פרויקטים בקטגוריה '{st.session_state.monitor_title}'.")
                 else:
