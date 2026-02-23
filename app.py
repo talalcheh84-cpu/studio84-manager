@@ -20,7 +20,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- התחברות לגוגל שיטס ---
-@st.cache_resource
 def init_connection():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_data = st.secrets["gcp_service_account"]
@@ -91,7 +90,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 QUOTES_LOG_PATH = BASE_DIR / "quotes_log.csv"
-QUOTES_CSV_PATH = BASE_DIR / "quotes.csv"  # Full quote form data for edit/pre-fill
+# Full quote form data (quotes tab in Google Sheets - no local quotes.csv)
 PROJECTS_DB_PATH = BASE_DIR / "projects_db.csv"
 PROJECTS_CSV_PATH = BASE_DIR / "projects.csv"  # פרויקטים פעילים (ERP)
 TASKS_LOG_PATH = BASE_DIR / "tasks_log.csv"
@@ -487,7 +486,7 @@ QUOTES_LOG_COLUMNS = [
     "Custom Item Price",
 ]
 
-# Full quote form data for edit/pre-fill (quotes.csv)
+# Full quote form data for edit/pre-fill (quotes tab in Google Sheets)
 QUOTES_CSV_COLUMNS = [
     "Date", "Client", "Project", "Version", "Quote Number", "Contact Person", "Client Email",
     "Quote Subject", "show_exterior", "show_interior", "show_drone", "show_video", "show_shots",
@@ -1375,43 +1374,66 @@ def _quote_key(client: str, project: str, version: str) -> tuple[str, str, str]:
     return ((client or "").strip(), (project or "").strip(), (version or "V1").strip())
 
 
-def read_quotes_csv() -> list[dict]:
-    """Read full quote form data from quotes.csv."""
-    if not QUOTES_CSV_PATH.exists():
-        return []
-    rows: list[dict] = []
+def _ensure_quotes_csv_schema() -> None:
+    """וידוא שקיים גיליון quotes בגוגל שיטס - הצעות מחיר (נתוני טופס מלא)."""
+    if spreadsheet is None:
+        return
     try:
-        with QUOTES_CSV_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                normalized = {}
-                for c in QUOTES_CSV_COLUMNS:
-                    v = r.get(c)
-                    if v is None or (isinstance(v, str) and v.strip().lower() in ("nan", "none")):
-                        normalized[c] = ""
-                    else:
-                        s = str(v).strip()
-                        normalized[c] = "" if s.lower() in ("nan", "none") else s
-                rows.append(normalized)
+        spreadsheet.worksheet('quotes')
+    except Exception:
+        try:
+            spreadsheet.add_worksheet(title='quotes', rows=100, cols=len(QUOTES_CSV_COLUMNS))
+            worksheet = spreadsheet.worksheet('quotes')
+            worksheet.update([QUOTES_CSV_COLUMNS], 'A1')
+        except Exception as e:
+            st.warning(f"שגיאה ביצירת גיליון quotes: {e}")
+
+
+def read_quotes_csv() -> list[dict]:
+    """Read full quote form data from Google Sheets (quotes tab) - קריאה בזמן אמת, ללא מטמון."""
+    if spreadsheet is None:
+        return []
+    _ensure_quotes_csv_schema()
+    try:
+        worksheet = spreadsheet.worksheet('quotes')
+        records = worksheet.get_all_records()
+        rows = _normalize_records_to_columns(records, QUOTES_CSV_COLUMNS)
+        result = []
+        for r in rows:
+            normalized = {}
+            for c in QUOTES_CSV_COLUMNS:
+                v = r.get(c)
+                if v is None or (isinstance(v, str) and v.strip().lower() in ("nan", "none")):
+                    normalized[c] = ""
+                else:
+                    s = str(v).strip()
+                    normalized[c] = "" if s.lower() in ("nan", "none") else s
+            result.append(normalized)
+        return result
     except Exception as e:
-        st.warning(f"שגיאה בקריאת quotes.csv: {e}")
-    return rows
+        st.warning(f"שגיאה בקריאת quotes: {e}")
+        return []
 
 
 def write_quotes_csv(rows: list[dict]) -> None:
-    """Write full quote form data to quotes.csv."""
+    """Write full quote form data to Google Sheets (quotes tab)."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    _ensure_quotes_csv_schema()
     try:
-        with QUOTES_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=QUOTES_CSV_COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in QUOTES_CSV_COLUMNS})
+        worksheet = spreadsheet.worksheet('quotes')
+        worksheet.clear()
+        data = [QUOTES_CSV_COLUMNS] + [[str(r.get(c, "") or "") for c in QUOTES_CSV_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת quotes.csv: {e}")
+        st.warning(f"שגיאה בשמירת quotes: {e}")
 
 
 def get_quote_from_csv(client: str, project: str, version: str) -> dict | None:
-    """Get full quote row from quotes.csv by (Client, Project, Version)."""
+    """Get full quote row from quotes (Google Sheets) by (Client, Project, Version)."""
     key = _quote_key(client, project, version)
     for r in read_quotes_csv():
         if _quote_key(r.get("Client", ""), r.get("Project", ""), r.get("Version", "")) == key:
@@ -1420,14 +1442,14 @@ def get_quote_from_csv(client: str, project: str, version: str) -> dict | None:
 
 
 def append_quote_to_csv(row: dict) -> None:
-    """Append a new quote row to quotes.csv."""
+    """Append a new quote row to quotes (Google Sheets)."""
     rows = read_quotes_csv()
     rows.append(row)
     write_quotes_csv(rows)
 
 
 def update_quote_in_csv(client: str, project: str, version: str, updated_row: dict) -> bool:
-    """Update existing quote in quotes.csv. Returns True if found and updated."""
+    """Update existing quote in quotes (Google Sheets). Returns True if found and updated."""
     rows = read_quotes_csv()
     key = _quote_key(client, project, version)
     for i, r in enumerate(rows):
@@ -2333,7 +2355,7 @@ def show_quote_page() -> None:
                 config["next_quote_number"] = new_next
                 save_config(config)
 
-            # שמירה / עדכון: quotes_log + quotes.csv
+            # שמירה / עדכון: quotes_log + quotes (Google Sheets)
             full_path_pdf = pdf_path.resolve() if pdf_path.exists() else output_path.resolve()
             quote_csv_row = {
                 "Date": display_date,
@@ -4551,6 +4573,8 @@ def main() -> None:
     user_type = st.session_state.get("user_type", "team_member")
 
     st.sidebar.title("תפריט ניהול")
+    if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
+        st.rerun()
     if st.sidebar.button("🚪 התנתק", key="logout_btn"):
         st.session_state["authenticated"] = False
         st.session_state["user_type"] = None
@@ -4559,6 +4583,8 @@ def main() -> None:
 
     if user_type == "team_member":
         # עובד - רק לשונית 'העבודה שלי'
+        if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
+            st.rerun()
         _render_quick_comm_sidebar_form()
         show_my_work_page()
         return
