@@ -89,14 +89,7 @@ import plotly.express as px
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
-QUOTES_LOG_PATH = BASE_DIR / "quotes_log.csv"
-# Full quote form data (quotes tab in Google Sheets - no local quotes.csv)
-PROJECTS_DB_PATH = BASE_DIR / "projects_db.csv"
-PROJECTS_CSV_PATH = BASE_DIR / "projects.csv"  # פרויקטים פעילים (ERP)
-TASKS_LOG_PATH = BASE_DIR / "tasks_log.csv"
-TASKS_CSV_PATH = BASE_DIR / "tasks.csv"  # משימות יומיות (Daily Task Menu)
-CONTACTS_CSV_PATH = BASE_DIR / "contacts.csv"  # CRM - אנשי קשר
-MESSAGES_CSV_PATH = BASE_DIR / "messages.csv"  # תקשורת מהירה - הודעות בזק
+# All data in Google Sheets - no local CSV files
 PROJECTS_ROOT = Path(os.path.join(CURRENT_DIR, "Projects"))
 QUOTES_ROOT = BASE_DIR / "Quotes"
 TEMPLATE_PATH = BASE_DIR / "quote_template.docx"
@@ -512,6 +505,7 @@ QUOTES_LOG_COLUMNS = [
 ]
 
 # Full quote form data for edit/pre-fill (quotes tab in Google Sheets)
+# Includes Status, File Path, Signed File Path, Total Price for quote management
 QUOTES_CSV_COLUMNS = [
     "Date", "Client", "Project", "Version", "Quote Number", "Contact Person", "Client Email",
     "Quote Subject", "show_exterior", "show_interior", "show_drone", "show_video", "show_shots",
@@ -524,6 +518,7 @@ QUOTES_CSV_COLUMNS = [
     "include_price_video", "include_total_shots_price",
     "model_update_val", "view_update_val", "extra_view_val",
     "custom_item_desc", "custom_item_price",
+    "Status", "File Path", "Signed File Path", "Total Price",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed"]
@@ -590,8 +585,7 @@ PROJECT_MANAGER_EMAILS = {
     "טלי": EMAIL_MYSELF,  # ניתן לעדכן לכתובת ייעודית אם קיימת
 }
 
-# --- אנשי קשר לפרויקט ---
-PROJECT_CONTACTS_PATH = BASE_DIR / "project_contacts.csv"
+# --- אנשי קשר לפרויקט (גיליון project_contacts בגוגל שיטס) ---
 PROJECT_CONTACTS_COLUMNS = [
     "Project",
     "Role Category",
@@ -611,7 +605,7 @@ ROLE_CATEGORIES = [
     "אחר",
 ]
 
-# --- CRM - אנשי קשר (contacts.csv) ---
+# --- CRM - אנשי קשר (גיליון contacts בגוגל שיטס) ---
 CONTACTS_COLUMNS = [
     "שם מלא",
     "חברה / משרד אדריכלים",
@@ -623,105 +617,82 @@ CONTACTS_COLUMNS = [
 CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבונות", "מפקח/אחר"]
 
 
-def _ensure_contacts_schema() -> None:
-    """Ensure contacts.csv exists with the required columns."""
-    if not CONTACTS_CSV_PATH.exists():
-        try:
-            with CONTACTS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=CONTACTS_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת contacts.csv: {e}")
+def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
+    """וידוא שקיים גיליון בגוגל שיטס עם העמודות הנדרשות."""
+    if spreadsheet is None:
         return
     try:
-        header = _read_csv_header(CONTACTS_CSV_PATH)
-        header_norm = [h.strip() for h in header]
-        if header_norm != CONTACTS_COLUMNS:
-            with CONTACTS_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=CONTACTS_COLUMNS)
-                writer.writeheader()
-    except Exception as e:
-        st.warning(f"שגיאה בעדכון מבנה contacts.csv: {e}")
+        spreadsheet.worksheet(sheet_name)
+    except Exception:
+        try:
+            spreadsheet.add_worksheet(title=sheet_name, rows=200, cols=len(columns))
+            worksheet = spreadsheet.worksheet(sheet_name)
+            worksheet.update([columns], 'A1')
+        except Exception as e:
+            st.warning(f"שגיאה ביצירת גיליון {sheet_name}: {e}")
 
 
 def load_contacts() -> pd.DataFrame:
-    """
-    טוען את קובץ contacts.csv. אם הקובץ לא קיים או ריק, מחזיר DataFrame ריק עם העמודות הנדרשות.
-    """
-    _ensure_contacts_schema()
-    if not CONTACTS_CSV_PATH.exists():
+    """טוען אנשי קשר מגיליון contacts בגוגל שיטס."""
+    if spreadsheet is None:
         return pd.DataFrame(columns=CONTACTS_COLUMNS)
+    _ensure_sheet('contacts', CONTACTS_COLUMNS)
     try:
-        df = pd.read_csv(CONTACTS_CSV_PATH, encoding="utf-8")
-        if df.empty:
-            return pd.DataFrame(columns=CONTACTS_COLUMNS)
-        df = df.reindex(columns=CONTACTS_COLUMNS, fill_value="").fillna("").astype(str)
-        return df
+        worksheet = spreadsheet.worksheet('contacts')
+        df = _read_worksheet_safe(worksheet, CONTACTS_COLUMNS)
+        return df.fillna('')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת contacts.csv: {e}")
+        st.warning(f"שגיאה בקריאת contacts: {e}")
         return pd.DataFrame(columns=CONTACTS_COLUMNS)
 
 
 def save_contacts(df: pd.DataFrame) -> None:
-    """שומר את מאגר אנשי הקשר ל-contacts.csv."""
-    try:
-        df_safe = df.reindex(columns=CONTACTS_COLUMNS, fill_value="").fillna("").astype(str)
-        df_safe.to_csv(CONTACTS_CSV_PATH, index=False, encoding="utf-8")
-    except Exception as e:
-        st.warning(f"שגיאה בשמירת contacts.csv: {e}")
-
-
-def _ensure_project_contacts_schema() -> None:
-    """Ensure project_contacts.csv exists with the required columns."""
-    if not PROJECT_CONTACTS_PATH.exists():
-        try:
-            with PROJECT_CONTACTS_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECT_CONTACTS_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת project_contacts.csv: {e}")
+    """שומר מאגר אנשי קשר לגיליון contacts בגוגל שיטס."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
         return
-
-    header = _read_csv_header(PROJECT_CONTACTS_PATH)
-    header_norm = [h.strip() for h in header]
-    if header_norm != PROJECT_CONTACTS_COLUMNS:
-        try:
-            with PROJECT_CONTACTS_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECT_CONTACTS_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה בעדכון מבנה project_contacts.csv: {e}")
+    _ensure_sheet('contacts', CONTACTS_COLUMNS)
+    try:
+        worksheet = spreadsheet.worksheet('contacts')
+        worksheet.clear()
+        df_safe = df.reindex(columns=CONTACTS_COLUMNS, fill_value="").fillna("").astype(str)
+        data = [df_safe.columns.values.tolist()] + df_safe.values.tolist()
+        if data:
+            worksheet.update(data, 'A1')
+        st.rerun()
+    except Exception as e:
+        st.warning(f"שגיאה בשמירת contacts: {e}")
 
 
 def read_project_contacts() -> list[dict]:
-    """Read all rows from project_contacts.csv."""
-    _ensure_project_contacts_schema()
-    if not PROJECT_CONTACTS_PATH.exists():
+    """קריאת אנשי קשר לפרויקטים מגיליון project_contacts בגוגל שיטס."""
+    if spreadsheet is None:
         return []
-
-    rows: list[dict] = []
+    _ensure_sheet('project_contacts', PROJECT_CONTACTS_COLUMNS)
     try:
-        with PROJECT_CONTACTS_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                normalized = {c: (r.get(c) or "").strip() for c in PROJECT_CONTACTS_COLUMNS}
-                rows.append(normalized)
+        worksheet = spreadsheet.worksheet('project_contacts')
+        df = _read_worksheet_safe(worksheet, PROJECT_CONTACTS_COLUMNS)
+        return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת project_contacts.csv: {e}")
+        st.warning(f"שגיאה בקריאת project_contacts: {e}")
         return []
-    return rows
 
 
 def write_project_contacts(rows: list[dict]) -> None:
-    """Write all rows to project_contacts.csv."""
+    """שמירת אנשי קשר לפרויקטים לגיליון project_contacts בגוגל שיטס."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    _ensure_sheet('project_contacts', PROJECT_CONTACTS_COLUMNS)
     try:
-        with PROJECT_CONTACTS_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=PROJECT_CONTACTS_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in PROJECT_CONTACTS_COLUMNS})
+        worksheet = spreadsheet.worksheet('project_contacts')
+        worksheet.clear()
+        data = [PROJECT_CONTACTS_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECT_CONTACTS_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת project_contacts.csv: {e}")
+        st.warning(f"שגיאה בשמירת project_contacts: {e}")
 
 
 def format_number(value: float) -> str:
@@ -788,15 +759,6 @@ def save_config(config: dict) -> None:
         st.warning(f"שגיאה בשמירת config.json: {e}")
 
 
-def _read_csv_header(path: Path) -> list[str]:
-    try:
-        with path.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            return next(reader, []) or []
-    except Exception:
-        return []
-
-
 # מיפוי סטטוסים ישנים לחדשים (למען תאימות לאחור)
 _LEGACY_PROJECT_STATUS_MAP = {
     "Active": "בעבודה",
@@ -805,122 +767,73 @@ _LEGACY_PROJECT_STATUS_MAP = {
 }
 
 
-def _ensure_projects_db_schema() -> None:
-    """Ensure projects_db.csv exists with the required columns."""
-    if not PROJECTS_DB_PATH.exists():
-        try:
-            with PROJECTS_DB_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECTS_DB_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת projects_db.csv: {e}")
-        return
-
-    header = _read_csv_header(PROJECTS_DB_PATH)
-    header_norm = [h.strip() for h in header]
-
-    if header_norm != PROJECTS_DB_COLUMNS:
-        try:
-            rows: list[dict] = []
-            with PROJECTS_DB_PATH.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for r in reader:
-                    normalized = {c: (r.get(c) or "").strip() for c in PROJECTS_DB_COLUMNS}
-                    status = normalized.get("Status") or DEFAULT_PROJECT_STATUS
-                    if status in _LEGACY_PROJECT_STATUS_MAP:
-                        status = _LEGACY_PROJECT_STATUS_MAP[status]
-                    elif status not in ALLOWED_PROJECT_STATUSES:
-                        status = DEFAULT_PROJECT_STATUS
-                    normalized["Status"] = status
-                    rows.append(normalized)
-            with PROJECTS_DB_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=PROJECTS_DB_COLUMNS)
-                writer.writeheader()
-                for r in rows:
-                    writer.writerow({c: (r.get(c) or "") for c in PROJECTS_DB_COLUMNS})
-        except Exception as e:
-            st.warning(f"שגיאה בעדכון מבנה projects_db.csv: {e}")
-
-
 def read_projects_db() -> list[dict]:
-    """Read all rows from projects_db.csv (project management DB)."""
-    _ensure_projects_db_schema()
-    if not PROJECTS_DB_PATH.exists():
+    """קריאת פרויקטים מגיליון projects_db בגוגל שיטס (מוניטור, Task Board)."""
+    if spreadsheet is None:
         return []
-
-    rows: list[dict] = []
+    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
     try:
-        with PROJECTS_DB_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                normalized = {c: (r.get(c) or "").strip() for c in PROJECTS_DB_COLUMNS}
-                status = normalized.get("Status") or DEFAULT_PROJECT_STATUS
-                if status in _LEGACY_PROJECT_STATUS_MAP:
-                    status = _LEGACY_PROJECT_STATUS_MAP[status]
-                elif status not in ALLOWED_PROJECT_STATUSES:
-                    status = DEFAULT_PROJECT_STATUS
-                normalized["Status"] = status
-                rows.append(normalized)
+        worksheet = spreadsheet.worksheet('projects_db')
+        df = _read_worksheet_safe(worksheet, PROJECTS_DB_COLUMNS)
+        rows = df.to_dict(orient='records')
+        for r in rows:
+            status = (r.get("Status") or DEFAULT_PROJECT_STATUS).strip()
+            if status in _LEGACY_PROJECT_STATUS_MAP:
+                r["Status"] = _LEGACY_PROJECT_STATUS_MAP[status]
+            elif status not in ALLOWED_PROJECT_STATUSES:
+                r["Status"] = DEFAULT_PROJECT_STATUS
+        return rows
     except Exception as e:
-        st.warning(f"שגיאה בקריאת projects_db.csv: {e}")
+        st.warning(f"שגיאה בקריאת projects_db: {e}")
         return []
-
-    return rows
 
 
 def write_projects_db(rows: list[dict]) -> None:
-    """Write all rows to projects_db.csv (project management DB)."""
+    """שמירת פרויקטים לגיליון projects_db בגוגל שיטס."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
     try:
-        with PROJECTS_DB_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=PROJECTS_DB_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in PROJECTS_DB_COLUMNS})
+        worksheet = spreadsheet.worksheet('projects_db')
+        worksheet.clear()
+        data = [PROJECTS_DB_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_DB_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת projects_db.csv: {e}")
-
-
-def _ensure_tasks_log_schema() -> None:
-    """Ensure tasks_log.csv exists with the required columns."""
-    if not TASKS_LOG_PATH.exists():
-        try:
-            with TASKS_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=TASKS_LOG_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת tasks_log.csv: {e}")
+        st.warning(f"שגיאה בשמירת projects_db: {e}")
 
 
 def read_tasks_log() -> list[dict]:
-    """Read all rows from tasks_log.csv."""
-    _ensure_tasks_log_schema()
-    if not TASKS_LOG_PATH.exists():
+    """קריאת משימות מגיליון tasks_log בגוגל שיטס (Task Board)."""
+    if spreadsheet is None:
         return []
-
-    rows: list[dict] = []
+    _ensure_sheet('tasks_log', TASKS_LOG_COLUMNS)
     try:
-        with TASKS_LOG_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                # תאימות לאחור: עמודה Flexible חסרה = ""
-                normalized = {c: (r.get(c, "") or "").strip() for c in TASKS_LOG_COLUMNS}
-                rows.append(normalized)
+        worksheet = spreadsheet.worksheet('tasks_log')
+        df = _read_worksheet_safe(worksheet, TASKS_LOG_COLUMNS)
+        return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת tasks_log.csv: {e}")
+        st.warning(f"שגיאה בקריאת tasks_log: {e}")
         return []
-    return rows
 
 
 def write_tasks_log(rows: list[dict]) -> None:
-    """Write all rows to tasks_log.csv."""
+    """שמירת משימות לגיליון tasks_log בגוגל שיטס."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    _ensure_sheet('tasks_log', TASKS_LOG_COLUMNS)
     try:
-        with TASKS_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=TASKS_LOG_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in TASKS_LOG_COLUMNS})
+        worksheet = spreadsheet.worksheet('tasks_log')
+        worksheet.clear()
+        data = [TASKS_LOG_COLUMNS] + [[str(r.get(c, "") or "") for c in TASKS_LOG_COLUMNS] for r in rows]
+        if data:
+            worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
-        st.warning(f"שגיאה בשמירת tasks_log.csv: {e}")
+        st.warning(f"שגיאה בשמירת tasks_log: {e}")
 
 
 def _ensure_tasks_csv_schema() -> None:
@@ -1029,7 +942,7 @@ def append_project_record(
     dropbox_path: str,
     budget_amount: str | float = "",
 ) -> None:
-    """Append a new project row to projects_db.csv."""
+    """Append a new project row to projects_db (Google Sheets)."""
     _ensure_projects_db_schema()
     existing_rows = read_projects_db()
     project_id = next_project_id(existing_rows)
@@ -1172,7 +1085,7 @@ def _project_exists_in_projects_csv(client: str, project: str) -> bool:
 
 
 def _project_exists_in_projects_db(client: str, project_name: str) -> bool:
-    """Check if client+project already exists in projects_db.csv (מוניטור וטבלת פרויקטים)."""
+    """Check if client+project already exists in projects_db (מוניטור וטבלת פרויקטים)."""
     rows = read_projects_db()
     c = (client or "").strip()
     p = (project_name or "").strip()
@@ -1201,138 +1114,56 @@ def _ensure_project_active_in_projects_db(
     return False
 
 
-def _ensure_quotes_log_schema() -> None:
-    """
-    Ensure quotes_log.csv exists with the new CRM structure:
-    Date, Client, Project, Version, Total Price, Status, File Path, Signed File Path.
-
-    If an old file exists (legacy 3-column format), it will be migrated in-place.
-    """
-    if not QUOTES_LOG_PATH.exists():
-        try:
-            with QUOTES_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=QUOTES_LOG_COLUMNS)
-                writer.writeheader()
-        except Exception as e:
-            st.warning(f"שגיאה ביצירת quotes_log.csv: {e}")
-        return
-
-    header = _read_csv_header(QUOTES_LOG_PATH)
-    header_norm = [h.strip() for h in header]
-
-    legacy_norm = ["date", "client_name", "total_inc_vat"]
-    if [h.lower() for h in header_norm] == legacy_norm:
-        # Migrate legacy file to the new schema while preserving history.
-        try:
-            migrated_rows: list[dict] = []
-            with QUOTES_LOG_PATH.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for r in reader:
-                    migrated_rows.append(
-                        {
-                            "Date": (r.get("date") or "").strip(),
-                            "Client": (r.get("client_name") or "").strip(),
-                            "Project": "",
-                            "Version": "V1",
-                            "Total Price": (r.get("total_inc_vat") or "").strip(),
-                            "Status": DEFAULT_QUOTE_STATUS,
-                            "File Path": "",
-                        }
-                    )
-
-            with QUOTES_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=QUOTES_LOG_COLUMNS)
-                writer.writeheader()
-                writer.writerows(migrated_rows)
-        except Exception as e:
-            st.warning(f"שגיאה בהמרת quotes_log.csv למבנה החדש: {e}")
-        return
-
-    # Detect previous schema without "Signed File Path" and migrate in-place while preserving data.
-    previous_schema = [
-        "Date",
-        "Client",
-        "Project",
-        "Version",
-        "Total Price",
-        "Status",
-        "File Path",
-    ]
-    if header_norm == previous_schema:
-        try:
-            migrated_rows: list[dict] = []
-            with QUOTES_LOG_PATH.open("r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for r in reader:
-                    status_val = (r.get("Status") or DEFAULT_QUOTE_STATUS).strip()
-                    if status_val not in ALLOWED_QUOTE_STATUSES:
-                        status_val = DEFAULT_QUOTE_STATUS
-                    migrated_rows.append(
-                        {
-                            "Date": (r.get("Date") or "").strip(),
-                            "Client": (r.get("Client") or "").strip(),
-                            "Project": (r.get("Project") or "").strip(),
-                            "Version": (r.get("Version") or "").strip() or "V1",
-                            "Total Price": (r.get("Total Price") or "").strip(),
-                            "Status": status_val,
-                            "File Path": (r.get("File Path") or "").strip(),
-                            "Signed File Path": "",
-                        }
-                    )
-
-            with QUOTES_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=QUOTES_LOG_COLUMNS)
-                writer.writeheader()
-                writer.writerows(migrated_rows)
-        except Exception as e:
-            st.warning(f"שגיאה בעדכון מבנה quotes_log.csv (Signed File Path): {e}")
-        return
-
-    # If the file exists but header is missing/partial/wrong, normalize it by rewriting.
-    if header_norm != QUOTES_LOG_COLUMNS:
-        try:
-            rows = read_quotes_log()  # will call _ensure_quotes_log_schema again, so guard
-        except RecursionError:
-            rows = []
-        try:
-            write_quotes_log(rows)
-        except Exception as e:
-            st.warning(f"שגיאה בעדכון מבנה quotes_log.csv: {e}")
+def _quote_csv_to_log_row(r: dict) -> dict:
+    """Map a quote row from Google Sheets (QUOTES_CSV_COLUMNS) to QUOTES_LOG_COLUMNS format."""
+    total = (r.get("Total Price") or "").strip()
+    if not total:
+        extracted = _extract_total_from_quote_row(r)
+        total = f"{extracted:.2f}" if extracted else ""
+    status = (r.get("Status") or DEFAULT_QUOTE_STATUS).strip()
+    if status not in ALLOWED_QUOTE_STATUSES:
+        status = DEFAULT_QUOTE_STATUS
+    return {
+        "Date": (r.get("Date") or "").strip(),
+        "Client": (r.get("Client") or "").strip(),
+        "Project": (r.get("Project") or "").strip(),
+        "Version": (r.get("Version") or "V1").strip(),
+        "Total Price": total,
+        "Status": status,
+        "File Path": (r.get("File Path") or "").strip(),
+        "Signed File Path": (r.get("Signed File Path") or "").strip(),
+        "Custom Item Desc": (r.get("custom_item_desc") or r.get("Custom Item Desc") or "").strip(),
+        "Custom Item Price": (r.get("custom_item_price") or r.get("Custom Item Price") or "").strip(),
+    }
 
 
 def read_quotes_log() -> list[dict]:
-    _ensure_quotes_log_schema()
-    if not QUOTES_LOG_PATH.exists():
-        return []
-
-    rows: list[dict] = []
-    try:
-        with QUOTES_LOG_PATH.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                # Normalize and guarantee all columns exist
-                normalized = {c: (r.get(c) or "").strip() for c in QUOTES_LOG_COLUMNS}
-                status = normalized.get("Status") or DEFAULT_QUOTE_STATUS
-                if status not in ALLOWED_QUOTE_STATUSES:
-                    status = DEFAULT_QUOTE_STATUS
-                normalized["Status"] = status
-                rows.append(normalized)
-    except Exception as e:
-        st.warning(f"שגיאה בקריאת quotes_log.csv: {e}")
-        return []
-
-    return rows
+    """קריאת הצעות מגיליון quotes בגוגל שיטס - באותה צורה בטוחה כמו projects (fillna, ניקוי רווחים)."""
+    rows = read_quotes_csv()
+    return [_quote_csv_to_log_row(r) for r in rows]
 
 
 def write_quotes_log(rows: list[dict]) -> None:
-    try:
-        with QUOTES_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=QUOTES_LOG_COLUMNS)
-            writer.writeheader()
-            for r in rows:
-                writer.writerow({c: (r.get(c) or "") for c in QUOTES_LOG_COLUMNS})
-    except Exception as e:
-        st.warning(f"שגיאה בשמירת quotes_log.csv: {e}")
+    """עדכון הצעות בגיליון quotes בגוגל שיטס - מיזוג שינויים (Status, File Path וכו') לרשומות הקיימות."""
+    if spreadsheet is None:
+        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        return
+    current = read_quotes_csv()
+    log_by_key = {(r.get("Date"), r.get("Client"), r.get("Project"), r.get("Version")): r for r in rows}
+    for i, q in enumerate(current):
+        k = (q.get("Date"), q.get("Client"), q.get("Project"), q.get("Version"))
+        log_row = log_by_key.get(k)
+        if log_row:
+            q["Status"] = (log_row.get("Status") or DEFAULT_QUOTE_STATUS).strip()
+            q["File Path"] = (log_row.get("File Path") or "").strip()
+            q["Signed File Path"] = (log_row.get("Signed File Path") or "").strip()
+            q["Total Price"] = (log_row.get("Total Price") or "").strip()
+            q["custom_item_desc"] = (log_row.get("Custom Item Desc") or "").strip()
+            q["custom_item_price"] = (log_row.get("Custom Item Price") or "").strip()
+    # Remove quotes that were deleted (in rows we have the current set - if a quote is in current but not in rows, it was deleted)
+    keys_in_rows = {(r.get("Date"), r.get("Client"), r.get("Project"), r.get("Version")) for r in rows}
+    current = [q for q in current if (q.get("Date"), q.get("Client"), q.get("Project"), q.get("Version")) in keys_in_rows]
+    write_quotes_csv(current)
 
 
 def parse_version_number(version_value: str) -> int:
@@ -1359,42 +1190,6 @@ def next_quote_version(client_name: str, project_name: str, existing_rows: list[
     return f"V{max_v + 1 if max_v > 0 else 1}"
 
 
-def append_quote_crm_log(
-    date_str: str,
-    client_name: str,
-    project_name: str,
-    version: str,
-    total_inc_vat: float,
-    file_path: str,
-    status: str = DEFAULT_QUOTE_STATUS,
-    custom_item_desc: str = "",
-    custom_item_price: str | float = "",
-) -> None:
-    _ensure_quotes_log_schema()
-    status = status if status in ALLOWED_QUOTE_STATUSES else DEFAULT_QUOTE_STATUS
-
-    row = {
-        "Date": (date_str or "").strip(),
-        "Client": (client_name or "").strip(),
-        "Project": (project_name or "").strip(),
-        "Version": (version or "V1").strip(),
-        "Total Price": f"{float(total_inc_vat or 0):.2f}",
-        "Status": status,
-        "File Path": (file_path or "").strip(),
-        "Signed File Path": "",
-        "Custom Item Desc": (custom_item_desc or "").strip(),
-        "Custom Item Price": str(custom_item_price) if custom_item_price != "" else "",
-    }
-
-    try:
-        write_header = not QUOTES_LOG_PATH.exists()
-        with QUOTES_LOG_PATH.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=QUOTES_LOG_COLUMNS)
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
-    except Exception as e:
-        st.warning(f"שגיאה בעדכון quotes_log.csv: {e}")
 
 
 def _quote_key(client: str, project: str, version: str) -> tuple[str, str, str]:
@@ -1483,37 +1278,6 @@ def update_quote_in_csv(client: str, project: str, version: str, updated_row: di
         if _quote_key(r.get("Client", ""), r.get("Project", ""), r.get("Version", "")) == key:
             rows[i] = {c: (updated_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
             write_quotes_csv(rows)
-            return True
-    return False
-
-
-def update_quote_in_log(
-    client: str,
-    project: str,
-    version: str,
-    date_str: str,
-    total_inc_vat: float,
-    file_path: str,
-    custom_item_desc: str = "",
-    custom_item_price: str | float = "",
-    new_client: str | None = None,
-    new_project: str | None = None,
-) -> bool:
-    """Update existing quote row in quotes_log.csv by (Client, Project, Version). Returns True if found."""
-    rows = read_quotes_log()
-    key = _quote_key(client, project, version)
-    for r in rows:
-        if _quote_key(r.get("Client", ""), r.get("Project", ""), r.get("Version", "")) == key:
-            r["Date"] = (date_str or "").strip()
-            r["Total Price"] = f"{float(total_inc_vat or 0):.2f}"
-            r["File Path"] = (file_path or "").strip()
-            r["Custom Item Desc"] = (custom_item_desc or "").strip()
-            r["Custom Item Price"] = str(custom_item_price) if custom_item_price != "" else ""
-            if new_client is not None:
-                r["Client"] = (new_client or "").strip()
-            if new_project is not None:
-                r["Project"] = (new_project or "").strip()
-            write_quotes_log(rows)
             return True
     return False
 
@@ -1714,8 +1478,9 @@ def _show_import_past_quote_form() -> None:
                 with target_path.open("wb") as f:
                     f.write(file.getvalue())
 
-                # הוספת שורה ל-quotes_log
-                new_row = {
+                # הוספת שורה לגיליון quotes בגוגל שיטס
+                new_row = {c: "" for c in QUOTES_CSV_COLUMNS}
+                new_row.update({
                     "Date": display_date,
                     "Client": (client or "").strip(),
                     "Project": (project or "").strip(),
@@ -1724,9 +1489,8 @@ def _show_import_past_quote_form() -> None:
                     "Status": "Signed",
                     "File Path": "",
                     "Signed File Path": str(target_path.resolve()),
-                }
-                existing_rows.append(new_row)
-                write_quotes_log(existing_rows)
+                })
+                append_quote_to_csv(new_row)
 
                 st.success(
                     "ההצעה יובאה בהצלחה! ניתן כעת להזניק את הפרויקט בלשונית ניהול הצעות."
@@ -2382,7 +2146,7 @@ def show_quote_page() -> None:
                 config["next_quote_number"] = new_next
                 save_config(config)
 
-            # שמירה / עדכון: quotes_log + quotes (Google Sheets)
+            # שמירה / עדכון: quotes (Google Sheets בלבד)
             full_path_pdf = pdf_path.resolve() if pdf_path.exists() else output_path.resolve()
             quote_csv_row = {
                 "Date": display_date,
@@ -2425,30 +2189,15 @@ def show_quote_page() -> None:
                 "extra_view_val": str(extra_view_val),
                 "custom_item_desc": (custom_item_desc or "").strip(),
                 "custom_item_price": str(custom_item_price),
+                "Status": DEFAULT_QUOTE_STATUS,
+                "File Path": str(full_path_pdf),
+                "Signed File Path": "",
+                "Total Price": f"{total_inc_vat:.2f}",
             }
             if is_edit_mode and orig_client is not None and orig_project is not None and orig_version:
-                update_quote_in_log(
-                    orig_client, orig_project, orig_version,
-                    display_date, total_inc_vat, str(full_path_pdf),
-                    custom_item_desc=custom_item_desc,
-                    custom_item_price=custom_item_price,
-                    new_client=(client_name or "").strip(),
-                    new_project=(project_name or "").strip(),
-                )
                 if not update_quote_in_csv(orig_client, orig_project, orig_version, quote_csv_row):
                     append_quote_to_csv(quote_csv_row)
             else:
-                append_quote_crm_log(
-                    display_date,
-                    client_name,
-                    project_name,
-                    quote_version,
-                    total_inc_vat,
-                    str(full_path_pdf),
-                    status=DEFAULT_QUOTE_STATUS,
-                    custom_item_desc=custom_item_desc,
-                    custom_item_price=custom_item_price,
-                )
                 append_quote_to_csv(quote_csv_row)
 
             # שמירת פרטי ההצעה האחרונה שנוצרה עבור כפתור עדכון הסטטוס
@@ -2550,7 +2299,7 @@ def show_quotes_management_page() -> None:
 
     rows = read_quotes_log()
     if not rows:
-        st.info("אין עדיין הצעות ב־quotes_log.csv. צרו הצעה חדשה כדי להתחיל.")
+        st.info("אין עדיין הצעות בגיליון quotes. צרו הצעה חדשה כדי להתחיל.")
         return
 
     # Prefer pandas for a nicer editor experience, but keep a fallback.
@@ -2806,22 +2555,21 @@ def show_quotes_management_page() -> None:
                         except Exception as e:
                             st.error(f"לא הצלחתי ליצור תיקייה: {e}")
 
-                    # קריאת אנשי קשר מ-contacts.csv
+                    # קריאת אנשי קשר מגיליון contacts בגוגל שיטס
                     contacts_list: list[str] = []
                     try:
-                        if CONTACTS_CSV_PATH.exists() and CONTACTS_CSV_PATH.stat().st_size > 0:
-                            df_contacts = load_contacts()
-                            if not df_contacts.empty:
-                                for _, c in df_contacts.iterrows():
-                                    name = (c.get("שם מלא") or "").strip()
-                                    company = (c.get("חברה / משרד אדריכלים") or "").strip()
-                                    contact_type = (c.get("סוג איש קשר") or "").strip()
-                                    if name:
-                                        parts = [name]
-                                        if company:
-                                            parts.append(company)
-                                        suffix = f" ({contact_type})" if contact_type else ""
-                                        contacts_list.append(f"{' - '.join(parts)}{suffix}")
+                        df_contacts = load_contacts()
+                        if not df_contacts.empty:
+                            for _, c in df_contacts.iterrows():
+                                name = (c.get("שם מלא") or "").strip()
+                                company = (c.get("חברה / משרד אדריכלים") or "").strip()
+                                contact_type = (c.get("סוג איש קשר") or "").strip()
+                                if name:
+                                    parts = [name]
+                                    if company:
+                                        parts.append(company)
+                                    suffix = f" ({contact_type})" if contact_type else ""
+                                    contacts_list.append(f"{' - '.join(parts)}{suffix}")
                     except Exception:
                         contacts_list = []
 
@@ -3028,7 +2776,7 @@ def show_quotes_management_page() -> None:
                             budget_amount=budget_amt,
                         )
 
-                        # עדכון סטטוס ההצעה ל-Approved עבור ההצעה הנוכחית ב-quotes_log.csv
+                        # עדכון סטטוס ההצעה ל-Approved בגיליון quotes
                         try:
                             rows = read_quotes_log()
                             updated = False
@@ -3045,7 +2793,7 @@ def show_quotes_management_page() -> None:
                             if updated:
                                 write_quotes_log(rows)
                             else:
-                                st.warning("לא נמצאה הצעה תואמת לעדכון סטטוס ב-quotes_log.csv.")
+                                st.warning("לא נמצאה הצעה תואמת לעדכון סטטוס בגיליון quotes.")
                         except Exception as e:
                             st.error(f"שגיאה בעדכון הסטטוס ל-Approved: {e}")
 
@@ -3074,7 +2822,7 @@ def show_quotes_management_page() -> None:
                             email_body,
                         )
 
-                        st.success("הפרויקט נפתח ונשמר ב-projects_db.csv.")
+                        st.success("הפרויקט נפתח ונשמר בגיליון projects_db.")
                         col_gmail_proj, col_outlook_proj = st.columns(2)
                         with col_gmail_proj:
                             st.link_button("📧 פתח טיוטה ב-Gmail למנהל הפרויקט", gmail_url)
@@ -3371,22 +3119,21 @@ def show_quotes_management_page() -> None:
                         except Exception as e:
                             st.error(f"לא הצלחתי ליצור תיקייה: {e}")
 
-                    # קריאת אנשי קשר מ-contacts.csv
+                    # קריאת אנשי קשר מגיליון contacts בגוגל שיטס
                     contacts_list_fb: list[str] = []
                     try:
-                        if CONTACTS_CSV_PATH.exists() and CONTACTS_CSV_PATH.stat().st_size > 0:
-                            df_contacts_fb = load_contacts()
-                            if not df_contacts_fb.empty:
-                                for _, c in df_contacts_fb.iterrows():
-                                    name = (c.get("שם מלא") or "").strip()
-                                    company = (c.get("חברה / משרד אדריכלים") or "").strip()
-                                    contact_type = (c.get("סוג איש קשר") or "").strip()
-                                    if name:
-                                        parts = [name]
-                                        if company:
-                                            parts.append(company)
-                                        suffix = f" ({contact_type})" if contact_type else ""
-                                        contacts_list_fb.append(f"{' - '.join(parts)}{suffix}")
+                        df_contacts_fb = load_contacts()
+                        if not df_contacts_fb.empty:
+                            for _, c in df_contacts_fb.iterrows():
+                                name = (c.get("שם מלא") or "").strip()
+                                company = (c.get("חברה / משרד אדריכלים") or "").strip()
+                                contact_type = (c.get("סוג איש קשר") or "").strip()
+                                if name:
+                                    parts = [name]
+                                    if company:
+                                        parts.append(company)
+                                    suffix = f" ({contact_type})" if contact_type else ""
+                                    contacts_list_fb.append(f"{' - '.join(parts)}{suffix}")
                     except Exception:
                         contacts_list_fb = []
 
@@ -3736,7 +3483,7 @@ def show_tasks_page() -> None:
         st.subheader("הוספת משימה")
         projects_options = _get_active_projects_options()
         if not projects_options:
-            st.info("אין פרויקטים פעילים. הוסף פרויקטים ב-projects_db.csv עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
+            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects_db עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
         else:
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -3798,7 +3545,7 @@ def show_tasks_page() -> None:
                             project_key_pipe = f"{client} | {project_name}"
                             project_key_dash = f"{client} - {project_name}"
 
-                            # 1. projects_db.csv
+                            # 1. projects_db (גוגל שיטס)
                             db_rows = read_projects_db()
                             db_updated = [
                                 r for r in db_rows
@@ -3822,38 +3569,35 @@ def show_tasks_page() -> None:
                             if len(csv_updated) < len(csv_rows):
                                 write_projects_csv(csv_updated)
 
-                            # 3. quotes_log.csv
-                            if QUOTES_LOG_PATH.exists():
-                                quotes_rows = read_quotes_log()
-                                quotes_updated = [
-                                    r for r in quotes_rows
-                                    if not (
-                                        (r.get("Client") or "").strip() == client
-                                        and (r.get("Project") or "").strip() == project_name
-                                    )
-                                ]
-                                if len(quotes_updated) < len(quotes_rows):
-                                    write_quotes_log(quotes_updated)
+                            # 3. quotes (גוגל שיטס)
+                            quotes_rows = read_quotes_log()
+                            quotes_updated = [
+                                r for r in quotes_rows
+                                if not (
+                                    (r.get("Client") or "").strip() == client
+                                    and (r.get("Project") or "").strip() == project_name
+                                )
+                            ]
+                            if len(quotes_updated) < len(quotes_rows):
+                                write_quotes_log(quotes_updated)
 
-                            # 4. tasks_log.csv
-                            if TASKS_LOG_PATH.exists():
-                                tasks_rows = read_tasks_log()
-                                tasks_updated = [
-                                    t for t in tasks_rows
-                                    if (t.get("Project") or "").strip() not in (project_key_pipe, project_key_dash)
-                                ]
-                                if len(tasks_updated) < len(tasks_rows):
-                                    write_tasks_log(tasks_updated)
+                            # 4. tasks_log (גוגל שיטס)
+                            tasks_rows = read_tasks_log()
+                            tasks_updated = [
+                                t for t in tasks_rows
+                                if (t.get("Project") or "").strip() not in (project_key_pipe, project_key_dash)
+                            ]
+                            if len(tasks_updated) < len(tasks_rows):
+                                write_tasks_log(tasks_updated)
 
-                            # 5. project_contacts.csv
-                            if PROJECT_CONTACTS_PATH.exists():
-                                contacts_rows = read_project_contacts()
-                                contacts_updated = [
-                                    c for c in contacts_rows
-                                    if (c.get("Project") or "").strip() not in (project_key_pipe, project_key_dash)
-                                ]
-                                if len(contacts_updated) < len(contacts_rows):
-                                    write_project_contacts(contacts_updated)
+                            # 5. project_contacts (גוגל שיטס)
+                            contacts_rows = read_project_contacts()
+                            contacts_updated = [
+                                c for c in contacts_rows
+                                if (c.get("Project") or "").strip() not in (project_key_pipe, project_key_dash)
+                            ]
+                            if len(contacts_updated) < len(contacts_rows):
+                                write_project_contacts(contacts_updated)
 
                             st.success("הפרויקט נמחק בהצלחה מכל קבצי המערכת!")
                             st.rerun()
