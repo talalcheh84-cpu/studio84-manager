@@ -155,8 +155,10 @@ def _read_messages_df() -> pd.DataFrame:
         records = worksheet.get_all_records()
         normalized = _normalize_records_to_columns(records, MESSAGES_COLUMNS)
         df = pd.DataFrame(normalized, columns=MESSAGES_COLUMNS) if normalized else pd.DataFrame(columns=MESSAGES_COLUMNS)
+        df = df.fillna('')
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"שגיאה בשליפת נתונים: {e}")
         return pd.DataFrame(columns=MESSAGES_COLUMNS)
 
 
@@ -921,9 +923,12 @@ def read_daily_tasks() -> list[dict]:
     try:
         worksheet = spreadsheet.worksheet('tasks')
         records = worksheet.get_all_records()
-        return _normalize_records_to_columns(records, DAILY_TASKS_COLUMNS)
+        rows = _normalize_records_to_columns(records, DAILY_TASKS_COLUMNS)
+        df = pd.DataFrame(rows, columns=DAILY_TASKS_COLUMNS) if rows else pd.DataFrame(columns=DAILY_TASKS_COLUMNS)
+        df = df.fillna('')
+        return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת tasks: {e}")
+        st.error(f"שגיאה בשליפת נתונים: {e}")
         return []
 
 
@@ -1063,9 +1068,11 @@ def read_projects_csv() -> list[dict]:
             if status not in PROJECTS_CSV_STATUSES:
                 status = "Active"
             r["Status"] = status
-        return rows
+        df = pd.DataFrame(rows, columns=PROJECTS_CSV_COLUMNS) if rows else pd.DataFrame(columns=PROJECTS_CSV_COLUMNS)
+        df = df.fillna('')
+        return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת projects: {e}")
+        st.error(f"שגיאה בשליפת נתונים: {e}")
         return []
 
 
@@ -1409,9 +1416,11 @@ def read_quotes_csv() -> list[dict]:
                     s = str(v).strip()
                     normalized[c] = "" if s.lower() in ("nan", "none") else s
             result.append(normalized)
-        return result
+        df = pd.DataFrame(result, columns=QUOTES_CSV_COLUMNS) if result else pd.DataFrame(columns=QUOTES_CSV_COLUMNS)
+        df = df.fillna('')
+        return df.to_dict(orient='records')
     except Exception as e:
-        st.warning(f"שגיאה בקריאת quotes: {e}")
+        st.error(f"שגיאה בשליפת נתונים: {e}")
         return []
 
 
@@ -2531,6 +2540,7 @@ def show_quotes_management_page() -> None:
         import pandas as pd  # type: ignore
 
         df = pd.DataFrame(rows, columns=QUOTES_LOG_COLUMNS)
+        df = df.fillna('')
 
         # --- מנוע חיפוש וסינון ---
         search_term = st.text_input(
@@ -3600,6 +3610,7 @@ def show_tasks_page() -> None:
             st.info("אין פרויקטים. פתח פרויקט מתוך הצעה מאושרת בלשונית ניהול הצעות.")
         else:
             df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
+            df_projects = df_projects.fillna('')
             edited_projects = st.data_editor(
                 df_projects,
                 hide_index=True,
@@ -4259,6 +4270,7 @@ def _render_daily_tasks_editor(assignee: str, key_prefix: str = "daily_tasks") -
         r["Is Done"] = False
 
     df = pd.DataFrame(pending)
+    df = df.fillna('')
     if "Is Done" not in df.columns:
         df["Is Done"] = False
 
@@ -4336,6 +4348,7 @@ def show_my_work_page() -> None:
 
     # סינון: השם המנוקה של המשתמש נמצא בתוך השם המנוקה של האחראי
     df_raw = pd.DataFrame(all_tasks)
+    df_raw = df_raw.fillna('')
     df_user_tasks = df_raw[
         df_raw["Assignee"].apply(
             lambda x: bool(safe_current_user) and safe_current_user in clean_name_for_match(x)
@@ -4439,6 +4452,7 @@ def show_daily_tasks_page() -> None:
 
     # סינון: רק משימות של assignee שטרם בוצעו (Is Done = False, 0, או ריק)
     df_raw = pd.DataFrame(all_tasks_monitor)
+    df_raw = df_raw.fillna('')
     if df_raw.empty:
         df_filtered = df_raw.copy()
     else:
@@ -4592,6 +4606,11 @@ def main() -> None:
     # מנהל - ניווט ראשי: חדר מצב vs ניהול שוטף
     main_nav = st.sidebar.radio("ניווט ראשי:", ["📊 חדר מצב (מוניטור פרויקטים)", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"])
 
+    # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
+    projects_rows_debug = read_projects_db()
+    df_projects = pd.DataFrame(projects_rows_debug, columns=PROJECTS_DB_COLUMNS)
+    df_projects = df_projects.fillna('')
+
     if main_nav == "📊 חדר מצב (מוניטור פרויקטים)":
         _render_quick_comm_notifications()
         # אזור חדר המצב: מוניטור פרויקטים - כפתורים צידיים + תצוגת טבלאות
@@ -4620,6 +4639,8 @@ def main() -> None:
             st.rerun()
         st.sidebar.markdown("---")
         _render_quick_comm_sidebar_form()
+        if st.sidebar.button('הצג נתונים גולמיים'):
+            st.write(df_projects)
 
         # תצוגת חתך ממוקדת (Drill-down) - במסך הראשי
         if st.session_state.monitor_filter is not None:
@@ -4627,6 +4648,7 @@ def main() -> None:
                 st.subheader(f"🔎 תצוגת חתך: {st.session_state.monitor_title}")
                 projects_rows = read_projects_db()
                 df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
+                df_projects = df_projects.fillna('')
                 mask = df_projects["Status"].isin(st.session_state.monitor_filter)
                 filtered_df = df_projects[mask]
                 edited_filtered_df = st.data_editor(
@@ -4669,6 +4691,8 @@ def main() -> None:
             index=0,
         )
         _render_quick_comm_sidebar_form()
+        if st.sidebar.button('הצג נתונים גולמיים'):
+            st.write(df_projects)
 
         if page == "יצירת הצעה חדשה":
             show_quote_page()
