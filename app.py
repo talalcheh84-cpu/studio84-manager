@@ -141,8 +141,11 @@ def _read_worksheet_safe(worksheet, expected_columns: list[str]) -> pd.DataFrame
         df = df.reindex(columns=expected_columns, fill_value='')
     else:
         df = pd.DataFrame(columns=expected_columns)
-    # ניקוי נתונים אגרסיבי
-    df.columns = [str(c).strip() for c in df.columns]
+    # ניקוי נתונים אגרסיבי - כולל הסרת רווחים משמות עמודות (כמו ב-quotes)
+    try:
+        df.columns = [str(c).strip() for c in df.columns]
+    except Exception:
+        pass
     df = df.dropna(how='all')
     df = df.fillna('')
     for col in df.select_dtypes(include=['object']).columns:
@@ -782,6 +785,8 @@ def read_projects_db() -> list[dict]:
     try:
         worksheet = spreadsheet.worksheet('projects_db')
         df = _read_worksheet_safe(worksheet, PROJECTS_DB_COLUMNS)
+        if not df.empty and hasattr(df.columns, 'str'):
+            df.columns = df.columns.str.strip()
         rows = df.to_dict(orient='records')
         for r in rows:
             status = (r.get("Status") or DEFAULT_PROJECT_STATUS).strip()
@@ -820,6 +825,8 @@ def read_tasks_log() -> list[dict]:
     try:
         worksheet = spreadsheet.worksheet('tasks_log')
         df = _read_worksheet_safe(worksheet, TASKS_LOG_COLUMNS)
+        if not df.empty and hasattr(df.columns, 'str'):
+            df.columns = df.columns.str.strip()
         return df.to_dict(orient='records')
     except Exception as e:
         st.warning(f"שגיאה בקריאת tasks_log: {e}")
@@ -859,13 +866,15 @@ def _ensure_tasks_csv_schema() -> None:
 
 
 def read_daily_tasks() -> list[dict]:
-    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks) - קריאה בזמן אמת, ללא מטמון."""
+    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks - אותיות קטנות כמו quotes) - קריאה בזמן אמת, ללא מטמון."""
     if spreadsheet is None:
         return []
     _ensure_tasks_csv_schema()
     try:
-        worksheet = spreadsheet.worksheet('tasks')
+        worksheet = spreadsheet.worksheet('tasks')  # שם גיליון: tasks (lowercase)
         df = _read_worksheet_safe(worksheet, DAILY_TASKS_COLUMNS)
+        if not df.empty and hasattr(df.columns, 'str'):
+            df.columns = df.columns.str.strip()
         return df.to_dict(orient='records')
     except Exception as e:
         st.error(f"שגיאה בשליפת נתונים (tasks): {e}")
@@ -995,13 +1004,15 @@ def _ensure_projects_csv_schema() -> None:
 
 
 def read_projects_csv() -> list[dict]:
-    """קריאת כל הפרויקטים הפעילים מגוגל שיטס (גיליון projects) - קריאה בזמן אמת, ללא מטמון."""
+    """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects - אותיות קטנות כמו quotes) - קריאה בזמן אמת, ללא מטמון."""
     if spreadsheet is None:
         return []
     _ensure_projects_csv_schema()
     try:
-        worksheet = spreadsheet.worksheet('projects')
+        worksheet = spreadsheet.worksheet('projects')  # שם גיליון: projects (lowercase)
         df = _read_worksheet_safe(worksheet, PROJECTS_CSV_COLUMNS)
+        if not df.empty and hasattr(df.columns, 'str'):
+            df.columns = df.columns.str.strip()
         rows = df.to_dict(orient='records')
         statuses_normalized = [s.strip().lower() for s in PROJECTS_CSV_STATUSES]
         for r in rows:
@@ -3295,17 +3306,18 @@ ACTIVE_PROJECT_STATUSES = ("בעבודה", "ממתין להתחלה")
 
 
 def _get_active_projects_options() -> list[str]:
-    """Return list of 'Client | Project Name' for active projects."""
+    """Return list of 'Client | Project Name' for projects. זמנית: מציג את כל הפרויקטים (ללא סינון סטטוס)."""
     rows = read_projects_db()
     options = []
-    active_normalized = [s.strip().lower() for s in ACTIVE_PROJECT_STATUSES]
+    # זמנית: הצגת כל הפרויקטים (ביטול סינון Status == Active)
+    # active_normalized = [s.strip().lower() for s in ACTIVE_PROJECT_STATUSES]
     for r in rows:
-        status = (r.get("Status") or "").strip().lower()
-        if status in active_normalized:
-            client = (r.get("Client") or "").strip()
-            project_name = (r.get("Project Name") or "").strip()
-            if client and project_name:
-                options.append(f"{client} | {project_name}")
+        # status = (r.get("Status") or "").strip().lower()
+        # if status in active_normalized:
+        client = (r.get("Client") or "").strip()
+        project_name = (r.get("Project Name") or "").strip()
+        if client and project_name:
+            options.append(f"{client} | {project_name}")
     return options
 
 
@@ -3390,39 +3402,44 @@ def show_tasks_page() -> None:
         else:
             df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
             df_projects = df_projects.fillna('')
-            if not is_admin():
-                current_user = _get_assignee_for_current_user()
-                df_projects = df_projects[df_projects["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))]
+            # זמנית: ביטול סינון לפי Team - הצגת כל הפרויקטים
+            # if not is_admin():
+            #     current_user = _get_assignee_for_current_user()
+            #     df_projects = df_projects[df_projects["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))]
             if df_projects.empty:
-                st.info("אין פרויקטים להצגה (אין פרויקטים שבהם אתה חבר צוות).")
+                st.info("אין פרויקטים להצגה.")
             else:
-                edited_projects = st.data_editor(
-                    df_projects,
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=[c for c in PROJECTS_DB_COLUMNS if c not in ("Status", "Manager", "Team")],
-                    column_config={
-                        "Status": st.column_config.SelectboxColumn(
-                            "סטטוס",
-                            options=ALLOWED_PROJECT_STATUSES,
-                            required=True,
-                        ),
-                        "Manager": st.column_config.SelectboxColumn(
-                            "מנהל",
-                            options=PROJECT_MANAGERS,
-                        ),
-                        "Team": st.column_config.SelectboxColumn(
-                            "צוות",
-                            options=PROJECT_TEAM_MEMBERS,
-                        ),
-                        'היקף כספי (₪)': st.column_config.NumberColumn(
-                            "היקף כספי (₪)",
-                            format="₪%d",
-                            default=0,
-                        ),
-                    },
-                    key="projects_editor",
-                )
+                try:
+                    edited_projects = st.data_editor(
+                        df_projects,
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=[c for c in PROJECTS_DB_COLUMNS if c not in ("Status", "Manager", "Team")],
+                        column_config={
+                            "Status": st.column_config.SelectboxColumn(
+                                "סטטוס",
+                                options=ALLOWED_PROJECT_STATUSES,
+                                required=True,
+                            ),
+                            "Manager": st.column_config.SelectboxColumn(
+                                "מנהל",
+                                options=PROJECT_MANAGERS,
+                            ),
+                            "Team": st.column_config.SelectboxColumn(
+                                "צוות",
+                                options=PROJECT_TEAM_MEMBERS,
+                            ),
+                            'היקף כספי (₪)': st.column_config.NumberColumn(
+                                "היקף כספי (₪)",
+                                format="₪%d",
+                                default=0,
+                            ),
+                        },
+                        key="projects_editor",
+                    )
+                except Exception as e:
+                    st.error(f"שגיאה בהצגת נתונים: {e}")
+                    edited_projects = df_projects
                 if st.button("שמור שינויים בפרויקטים", type="primary", key="save_projects_btn"):
                     if is_admin():
                         updated = edited_projects.to_dict(orient="records")
@@ -3450,18 +3467,16 @@ def show_tasks_page() -> None:
 
         tasks_rows_monitor = read_tasks_log()
         today_dt = date.today()
-        # שליפת כל המשימות הפתוחות (Status שונה מ-Done)
-        open_tasks = [
-            t for t in tasks_rows_monitor
-            if (t.get("Status") or "").strip() != "Done"
-        ]
-        # משתמש שאינו מנהל - סינון לפי עמודת האחראי (Assignee)
-        if not is_admin():
-            current_user = _get_assignee_for_current_user()
-            open_tasks = [t for t in open_tasks if _assignee_matches_task(t.get("Assignee") or "", current_user)]
+        # זמנית: הצגת כל המשימות (ביטול סינון Status != Done)
+        open_tasks = list(tasks_rows_monitor)
+        # משתמש שאינו מנהל - זמנית מציגים הכל (ביטול סינון לפי Assignee)
+        # if not is_admin():
+        #     current_user = _get_assignee_for_current_user()
+        #     open_tasks = [t for t in open_tasks if _assignee_matches_task(t.get("Assignee") or "", current_user)]
         df_tasks = pd.DataFrame(open_tasks) if open_tasks else pd.DataFrame()
-        if not df_tasks.empty and "Due Date" in df_tasks.columns:
-            df_tasks["due_date_parsed"] = pd.to_datetime(df_tasks["Due Date"], errors="coerce").dt.date
+        due_col = df_tasks.get("Due Date") if not df_tasks.empty else None
+        if due_col is not None:
+            df_tasks["due_date_parsed"] = pd.to_datetime(due_col, errors="coerce").dt.date
 
         def _get_task_due_date(task: dict) -> date | None:
             due_str = task.get("Due Date") or ""
@@ -3486,26 +3501,29 @@ def show_tasks_page() -> None:
                 t for t in open_tasks
                 if _assignee_matches_task(t.get("Assignee") or "", assignee)
             ]
-            with st.expander(f"👤 {assignee} | משימות פתוחות: {len(user_tasks)}", expanded=False):
-                if not user_tasks:
-                    st.success("השולחן נקי!")
-                else:
-                    for idx, r in enumerate(user_tasks):
-                        task_name = (r.get("Task Name") or "").strip()
-                        project = (r.get("Project") or "").strip()
-                        due_str = (r.get("Due Date") or "").strip()
-                        due_parsed = _get_task_due_date(r)
-                        col_btn, col_msg = st.columns([0.12, 0.88])
-                        with col_btn:
-                            if st.button("✅ סמן כבוצע", key=f"monitor_done_{r.get('Task ID')}_{assignee}_{idx}"):
-                                _mark_task_done_monitor(r.get("Task ID"))
-                        with col_msg:
-                            if due_parsed is None or due_parsed < today_dt:
-                                st.error(f"🔴 **{task_name}** – {project} – {due_str}")
-                            elif due_parsed == today_dt:
-                                st.info(f"🔵 **{task_name}** – {project} – {due_str}")
-                            else:
-                                st.success(f"🟢 **{task_name}** – {project} – {due_str}")
+            try:
+                with st.expander(f"👤 {assignee} | משימות פתוחות: {len(user_tasks)}", expanded=False):
+                    if not user_tasks:
+                        st.success("השולחן נקי!")
+                    else:
+                        for idx, r in enumerate(user_tasks):
+                            task_name = (r.get("Task Name") or "").strip()
+                            project = (r.get("Project") or "").strip()
+                            due_str = (r.get("Due Date") or "").strip()
+                            due_parsed = _get_task_due_date(r)
+                            col_btn, col_msg = st.columns([0.12, 0.88])
+                            with col_btn:
+                                if st.button("✅ סמן כבוצע", key=f"monitor_done_{r.get('Task ID')}_{assignee}_{idx}"):
+                                    _mark_task_done_monitor(r.get("Task ID"))
+                            with col_msg:
+                                if due_parsed is None or due_parsed < today_dt:
+                                    st.error(f"🔴 **{task_name}** – {project} – {due_str}")
+                                elif due_parsed == today_dt:
+                                    st.info(f"🔵 **{task_name}** – {project} – {due_str}")
+                                else:
+                                    st.success(f"🟢 **{task_name}** – {project} – {due_str}")
+            except Exception as e:
+                st.error(f"שגיאה בהצגת נתונים: {e}")
 
         st.divider()
         st.subheader("הוספת משימה")
@@ -3639,33 +3657,43 @@ def show_tasks_page() -> None:
             st.info("אין משימות. הוסף משימה חדשה למעלה.")
         else:
             df = pd.DataFrame(tasks_rows, columns=TASKS_LOG_COLUMNS)
-            if not is_admin():
-                current_user = _get_assignee_for_current_user()
-                df = df[df["Assignee"].fillna("").apply(lambda a: _assignee_matches_task(str(a), current_user))]
-            if df.empty and not is_admin():
-                st.info("אין משימות להצגה (אין משימות שבהן אתה האחראי).")
+            df = df.fillna('')
+            if hasattr(df.columns, 'str'):
+                df.columns = df.columns.str.strip()
+            # זמנית: ביטול סינון לפי Assignee - הצגת כל המשימות
+            # if not is_admin():
+            #     current_user = _get_assignee_for_current_user()
+            #     assignee_col = df.get("Assignee")
+            #     if assignee_col is not None:
+            #         df = df[assignee_col.fillna("").apply(lambda a: _assignee_matches_task(str(a), current_user))]
+            if df.empty:
+                st.info("אין משימות להצגה.")
             else:
-                editable_cols = ["Status", "Priority", "Notes"]
-                disabled_cols = [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
-                edited_df = st.data_editor(
-                    df,
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=disabled_cols,
-                    column_config={
-                        "Status": st.column_config.SelectboxColumn(
-                            "Status",
-                            options=TASK_STATUSES,
-                            required=True,
-                        ),
-                        "Priority": st.column_config.SelectboxColumn(
-                            "עדיפות",
-                            options=TASK_PRIORITIES,
-                            required=True,
-                        ),
-                    },
-                    key="tasks_editor",
-                )
+                try:
+                    editable_cols = ["Status", "Priority", "Notes"]
+                    disabled_cols = [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
+                    edited_df = st.data_editor(
+                        df,
+                        hide_index=True,
+                        use_container_width=True,
+                        disabled=disabled_cols,
+                        column_config={
+                            "Status": st.column_config.SelectboxColumn(
+                                "Status",
+                                options=TASK_STATUSES,
+                                required=True,
+                            ),
+                            "Priority": st.column_config.SelectboxColumn(
+                                "עדיפות",
+                                options=TASK_PRIORITIES,
+                                required=True,
+                            ),
+                        },
+                        key="tasks_editor",
+                    )
+                except Exception as e:
+                    st.error(f"שגיאה בהצגת נתונים: {e}")
+                    edited_df = df
                 if st.button("שמור שינויים", type="primary", key="save_tasks_btn"):
                     if is_admin():
                         updated = edited_df.to_dict(orient="records")
@@ -3811,30 +3839,33 @@ def show_tasks_page() -> None:
         except Exception as e:
             st.warning(f"שגיאה בטעינת חגים: {e}")
 
-        # טעינת משימות מוגנת
+        # טעינת משימות מוגנת - זמנית: הצגת כל המשימות (ללא סינון Status)
         try:
             tasks_rows = read_tasks_log()
             df_tasks = pd.DataFrame(tasks_rows) if tasks_rows else pd.DataFrame()
-            if df_tasks.empty or "Status" not in df_tasks.columns:
+            if not df_tasks.empty and hasattr(df_tasks.columns, 'str'):
+                df_tasks.columns = df_tasks.columns.str.strip()
+            if df_tasks.empty:
                 df_open = pd.DataFrame()
             else:
-                # סינון סלחני - חסין לרווחים ואותיות (Done/done/DONE)
-                df_open = df_tasks[~df_tasks["Status"].fillna("").astype(str).str.strip().str.lower().isin(["done"])]
+                # זמנית: הצגת כל המשימות (ביטול סינון Status != Done)
+                df_open = df_tasks.copy()
             for index, row in df_open.iterrows():
                 try:
-                    start_val = row.get("Start Date", row["Due Date"])
+                    start_val = row.get("Start Date", row.get("Due Date"))
                     if pd.isna(start_val) or str(start_val).strip() == "":
-                        start_val = row["Due Date"]
+                        start_val = row.get("Due Date")
                     if pd.isna(start_val):
                         continue
 
                     start_str = pd.to_datetime(start_val).strftime("%Y-%m-%d")
                     end_val = row.get("Due Date")
                     end_str = pd.to_datetime(end_val).strftime("%Y-%m-%d") if not pd.isna(end_val) else start_str
-                    assignee = str(row["Assignee"]).split("-")[0].strip()
+                    assignee = str(row.get("Assignee", "") or "").split("-")[0].strip()
+                    task_name = row.get("Task Name", "") or ""
 
                     calendar_events.append({
-                        "title": f"{assignee}: {row['Task Name']}",
+                        "title": f"{assignee}: {task_name}",
                         "start": start_str,
                         "end": end_str,
                         "color": "#4b8bbe",
@@ -3844,7 +3875,7 @@ def show_tasks_page() -> None:
         except Exception as e:
             st.warning(f"בעיה בשליפת המשימות: {e}")
 
-        # רינדור הלוח
+        # רינדור הלוח - עם טיפול בשגיאות
         try:
             cal_options = {
                 "headerToolbar": {
@@ -3858,7 +3889,7 @@ def show_tasks_page() -> None:
             st.markdown("<br><br><br>", unsafe_allow_html=True)
             calendar(events=calendar_events, options=cal_options)
         except Exception as e:
-            st.error(f"שגיאה בהצגת רכיב לוח השנה: {e}")
+            st.error(f"שגיאה בהצגת נתונים: {e}")
 
 
 def show_contacts_page() -> None:
@@ -4413,9 +4444,9 @@ def main() -> None:
 
     # אתחול משתני מצב למוניטור (Drill-down)
     if "monitor_filter" not in st.session_state:
-        st.session_state.monitor_filter = None
+        st.session_state.monitor_filter = "__ALL__"  # זמנית: הצגת כל הפרויקטים כברירת מחדל
     if "monitor_title" not in st.session_state:
-        st.session_state.monitor_title = ""
+        st.session_state.monitor_title = "כל הפרויקטים (ללא סינון)"
 
     user_type = st.session_state.get("user_type", "team_member")
 
@@ -4470,6 +4501,10 @@ def main() -> None:
             st.session_state.monitor_filter = ["הסתיים", "חשבונית נשלחה", "שולם"]
             st.session_state.monitor_title = "הסתיימו (בגבייה)"
             st.rerun()
+        if st.sidebar.button("📋 הצג הכל (Show All) - ללא סינון", use_container_width=True, key="monitor_show_all"):
+            st.session_state.monitor_filter = "__ALL__"
+            st.session_state.monitor_title = "כל הפרויקטים (ללא סינון)"
+            st.rerun()
         st.sidebar.markdown("---")
         _render_quick_comm_sidebar_form()
         if st.sidebar.button('הצג נתונים גולמיים'):
@@ -4482,25 +4517,36 @@ def main() -> None:
                 projects_rows = read_projects_db()
                 df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
                 df_projects = df_projects.fillna('')
-                # סינון סלחני - חסין לרווחים ואותיות (strip + case-insensitive לעמודת Status)
-                if "Status" in df_projects.columns:
-                    status_series = df_projects["Status"].fillna("").astype(str).str.strip().str.lower()
-                    filter_normalized = [s.strip().lower() for s in st.session_state.monitor_filter]
-                    mask = status_series.isin(filter_normalized)
+                # זמנית: תמיכה ב-Show All - הצגת כל הפרויקטים ללא סינון
+                if st.session_state.monitor_filter == "__ALL__":
+                    filtered_df = df_projects.copy()
                 else:
-                    mask = pd.Series([False] * len(df_projects), index=df_projects.index)
-                filtered_df = df_projects[mask]
-                # משתמש שאינו מנהל - סינון לפי עמודת Team
-                if not is_admin():
-                    current_user = _get_assignee_for_current_user()
-                    team_mask = filtered_df["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))
-                    filtered_df = filtered_df[team_mask]
+                    # סינון סלחני - חסין לרווחים ואותיות (strip + case-insensitive לעמודת Status)
+                    status_col = df_projects.get("Status")
+                    if status_col is not None:
+                        status_series = status_col.fillna("").astype(str).str.strip().str.lower()
+                        filter_normalized = [s.strip().lower() for s in st.session_state.monitor_filter]
+                        mask = status_series.isin(filter_normalized)
+                    else:
+                        mask = pd.Series([False] * len(df_projects), index=df_projects.index)
+                    filtered_df = df_projects[mask]
+                # זמנית: ביטול סינון לפי Team - הצגת כל הפרויקטים
+                # if not is_admin():
+                #     current_user = _get_assignee_for_current_user()
+                #     team_col = filtered_df.get("Team")
+                #     if team_col is not None:
+                #         team_mask = team_col.fillna("").apply(lambda t: _user_in_team(str(t), current_user))
+                #         filtered_df = filtered_df[team_mask]
                 if filtered_df.empty:
-                    st.info("לא נמצאו פרויקטים פעילים." if (st.session_state.monitor_filter == ["בעבודה", "ממתין להתחלה"]) else f"לא נמצאו פרויקטים בקטגוריה '{st.session_state.monitor_title}'.")
+                    st.info("לא נמצאו פרויקטים." if (st.session_state.monitor_filter == "__ALL__") else "לא נמצאו פרויקטים פעילים." if (st.session_state.monitor_filter == ["בעבודה", "ממתין להתחלה"]) else f"לא נמצאו פרויקטים בקטגוריה '{st.session_state.monitor_title}'.")
                 else:
-                    edited_filtered_df = st.data_editor(
-                        filtered_df, hide_index=True, use_container_width=True, key="drilldown_editor"
-                    )
+                    try:
+                        edited_filtered_df = st.data_editor(
+                            filtered_df, hide_index=True, use_container_width=True, key="drilldown_editor"
+                        )
+                    except Exception as e:
+                        st.error(f"שגיאה בהצגת נתונים: {e}")
+                        edited_filtered_df = filtered_df
                     if not edited_filtered_df.equals(filtered_df):
                         df_projects.update(edited_filtered_df)
                         updated = df_projects.to_dict(orient="records")
