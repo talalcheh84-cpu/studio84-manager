@@ -134,11 +134,26 @@ def _read_worksheet_safe(worksheet, expected_columns: list[str]) -> pd.DataFrame
     """קריאה בטוחה מגיליון גוגל שיטס - תומך בכותרות בעברית, מונע קריסות של gspread."""
     raw_data = worksheet.get_all_values()
     if len(raw_data) > 1:
-        df = pd.DataFrame(raw_data[1:], columns=raw_data[0])
+        raw_headers = [str(h).strip() for h in raw_data[0]]
+        df = pd.DataFrame(raw_data[1:], columns=raw_headers)
+        # מיפוי כותרות גולמיות לעמודות הצפויות (case-insensitive) - למקרה של רווחים/אותיות
+        rename_map = {}
+        for col in df.columns:
+            col_clean = (col or "").strip()
+            for exp in expected_columns:
+                if exp.strip().lower() == col_clean.lower():
+                    rename_map[col] = exp
+                    break
+        df = df.rename(columns=rename_map)
+        df = df.reindex(columns=expected_columns, fill_value='')
     else:
-        df = pd.DataFrame(columns=raw_data[0] if raw_data else [])
+        df = pd.DataFrame(columns=expected_columns)
+    # ניקוי נתונים אגרסיבי
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how='all')
     df = df.fillna('')
-    df = df.reindex(columns=expected_columns, fill_value='')
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].astype(str).str.strip()
     return df
 
 
@@ -1068,10 +1083,13 @@ def read_projects_csv() -> list[dict]:
         worksheet = spreadsheet.worksheet('projects')
         df = _read_worksheet_safe(worksheet, PROJECTS_CSV_COLUMNS)
         rows = df.to_dict(orient='records')
+        statuses_normalized = [s.strip().lower() for s in PROJECTS_CSV_STATUSES]
         for r in rows:
-            status = r.get("Status") or "Active"
-            if status not in PROJECTS_CSV_STATUSES:
+            status = (r.get("Status") or "Active").strip()
+            if status.lower() not in statuses_normalized:
                 status = "Active"
+            else:
+                status = PROJECTS_CSV_STATUSES[statuses_normalized.index(status.lower())]
             r["Status"] = status
         return rows
     except Exception as e:
@@ -3526,8 +3544,10 @@ def _get_active_projects_options() -> list[str]:
     """Return list of 'Client | Project Name' for active projects."""
     rows = read_projects_db()
     options = []
+    active_normalized = [s.strip().lower() for s in ACTIVE_PROJECT_STATUSES]
     for r in rows:
-        if (r.get("Status") or "").strip() in ACTIVE_PROJECT_STATUSES:
+        status = (r.get("Status") or "").strip().lower()
+        if status in active_normalized:
             client = (r.get("Client") or "").strip()
             project_name = (r.get("Project Name") or "").strip()
             if client and project_name:
@@ -3563,19 +3583,24 @@ def _compute_project_monitor_stats() -> dict[str, int | float]:
         except (TypeError, ValueError):
             return 0.0
 
+    active_norm = [x.strip().lower() for x in active_statuses]
+    feedback_norm = [x.strip().lower() for x in feedback_statuses]
+    frozen_norm = [x.strip().lower() for x in frozen_statuses]
+    completed_norm = [x.strip().lower() for x in completed_statuses]
     for r in rows:
         s = (r.get("Status") or "").strip()
+        s_lower = s.lower()
         amt = _safe_amount(r)
-        if s in active_statuses:
+        if s_lower in active_norm:
             stats["active"] += 1
             stats["active_sum"] += amt
-        elif s in feedback_statuses:
+        elif s_lower in feedback_norm:
             stats["feedback"] += 1
             stats["feedback_sum"] += amt
-        elif s in frozen_statuses:
+        elif s_lower in frozen_norm:
             stats["frozen"] += 1
             stats["frozen_sum"] += amt
-        elif s in completed_statuses:
+        elif s_lower in completed_norm:
             stats["completed"] += 1
             stats["completed_sum"] += amt
     return stats
@@ -4004,7 +4029,8 @@ def show_tasks_page() -> None:
             if df_tasks.empty or "Status" not in df_tasks.columns:
                 df_open = pd.DataFrame()
             else:
-                df_open = df_tasks[df_tasks["Status"] != "Done"]
+                # סינון סלחני - חסין לרווחים ואותיות (Done/done/DONE)
+                df_open = df_tasks[~df_tasks["Status"].fillna("").astype(str).str.strip().str.lower().isin(["done"])]
             for index, row in df_open.iterrows():
                 try:
                     start_val = row.get("Start Date", row["Due Date"])
@@ -4649,29 +4675,38 @@ def main() -> None:
                 projects_rows = read_projects_db()
                 df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
                 df_projects = df_projects.fillna('')
-                mask = df_projects["Status"].isin(st.session_state.monitor_filter)
+                # סינון סלחני - חסין לרווחים ואותיות (strip + case-insensitive לעמודת Status)
+                if "Status" in df_projects.columns:
+                    status_series = df_projects["Status"].fillna("").astype(str).str.strip().str.lower()
+                    filter_normalized = [s.strip().lower() for s in st.session_state.monitor_filter]
+                    mask = status_series.isin(filter_normalized)
+                else:
+                    mask = pd.Series([False] * len(df_projects), index=df_projects.index)
                 filtered_df = df_projects[mask]
-                edited_filtered_df = st.data_editor(
-                    filtered_df, hide_index=True, use_container_width=True, key="drilldown_editor"
-                )
-                if not edited_filtered_df.equals(filtered_df):
-                    df_projects.update(edited_filtered_df)
-                    updated = df_projects.to_dict(orient="records")
-                    write_projects_db(updated)
-                    st.success("הנתונים עודכנו בהצלחה!")
-                    st.rerun()
-                st.markdown("**פעולות מהירות:**")
-                cols = st.columns(min(4, len(filtered_df)) if len(filtered_df) > 0 else 1)
-                for idx, (_, row) in enumerate(filtered_df.iterrows()):
-                    client = (row.get("Client") or "").strip()
-                    project_name = (row.get("Project Name") or "").strip()
-                    manager = (row.get("Manager") or "").strip()
-                    project_display = f"{client} | {project_name}" if (client and project_name) else ""
-                    with cols[idx % len(cols)]:
-                        if project_display and st.button(f'➕ הוסף משימה', key=f'bridge_task_{idx}'):
-                            st.session_state["bridge_project_name"] = project_display
-                            st.session_state["bridge_assignee"] = manager
-                            st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
+                if filtered_df.empty:
+                    st.info("לא נמצאו פרויקטים פעילים." if (st.session_state.monitor_filter == ["בעבודה", "ממתין להתחלה"]) else f"לא נמצאו פרויקטים בקטגוריה '{st.session_state.monitor_title}'.")
+                else:
+                    edited_filtered_df = st.data_editor(
+                        filtered_df, hide_index=True, use_container_width=True, key="drilldown_editor"
+                    )
+                    if not edited_filtered_df.equals(filtered_df):
+                        df_projects.update(edited_filtered_df)
+                        updated = df_projects.to_dict(orient="records")
+                        write_projects_db(updated)
+                        st.success("הנתונים עודכנו בהצלחה!")
+                        st.rerun()
+                    st.markdown("**פעולות מהירות:**")
+                    cols = st.columns(min(4, len(filtered_df)) if len(filtered_df) > 0 else 1)
+                    for idx, (_, row) in enumerate(filtered_df.iterrows()):
+                        client = (row.get("Client") or "").strip()
+                        project_name = (row.get("Project Name") or "").strip()
+                        manager = (row.get("Manager") or "").strip()
+                        project_display = f"{client} | {project_name}" if (client and project_name) else ""
+                        with cols[idx % len(cols)]:
+                            if project_display and st.button(f'➕ הוסף משימה', key=f'bridge_task_{idx}'):
+                                st.session_state["bridge_project_name"] = project_display
+                                st.session_state["bridge_assignee"] = manager
+                                st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
                 if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
                     st.session_state.monitor_filter = None
                     st.session_state.monitor_title = ""
