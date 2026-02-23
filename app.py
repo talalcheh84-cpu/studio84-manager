@@ -164,12 +164,14 @@ def _ensure_messages_csv() -> None:
             spreadsheet.add_worksheet(title='messages', rows=100, cols=len(MESSAGES_COLUMNS))
             worksheet = spreadsheet.worksheet('messages')
             worksheet.update([MESSAGES_COLUMNS], 'A1')
+            st.cache_data.clear()
         except Exception as e:
             st.warning(f"שגיאה ביצירת גיליון messages: {e}")
 
 
+@st.cache_data(ttl=15)
 def _read_messages_df() -> pd.DataFrame:
-    """קריאת הודעות תקשורת מהירה מגוגל שיטס (קריאה בזמן אמת, ללא מטמון)."""
+    """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
     if spreadsheet is None:
         return pd.DataFrame(columns=MESSAGES_COLUMNS)
     _ensure_messages_csv()
@@ -193,6 +195,7 @@ def _write_messages_df(df: pd.DataFrame) -> None:
         data = [df_safe.columns.values.tolist()] + df_safe.values.tolist()
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת messages: {e}")
@@ -638,10 +641,12 @@ def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
             spreadsheet.add_worksheet(title=sheet_name, rows=200, cols=len(columns))
             worksheet = spreadsheet.worksheet(sheet_name)
             worksheet.update([columns], 'A1')
+            st.cache_data.clear()
         except Exception as e:
             st.warning(f"שגיאה ביצירת גיליון {sheet_name}: {e}")
 
 
+@st.cache_data(ttl=15)
 def load_contacts() -> pd.DataFrame:
     """טוען אנשי קשר מגיליון contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -669,11 +674,13 @@ def save_contacts(df: pd.DataFrame) -> None:
         data = [df_safe.columns.values.tolist()] + df_safe.values.tolist()
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת contacts: {e}")
 
 
+@st.cache_data(ttl=15)
 def read_project_contacts() -> list[dict]:
     """קריאת אנשי קשר לפרויקטים מגיליון project_contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -700,6 +707,7 @@ def write_project_contacts(rows: list[dict]) -> None:
         data = [PROJECT_CONTACTS_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECT_CONTACTS_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת project_contacts: {e}")
@@ -777,9 +785,11 @@ _LEGACY_PROJECT_STATUS_MAP = {
 }
 
 
+@st.cache_data(ttl=15)
 def read_projects_db() -> list[dict]:
     """קריאת פרויקטים מגיליון projects_db בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
+        st.error("שגיאת קריאה: אין חיבור לגוגל שיטס.")
         return []
     _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
     try:
@@ -796,7 +806,7 @@ def read_projects_db() -> list[dict]:
                 r["Status"] = DEFAULT_PROJECT_STATUS
         return rows
     except Exception as e:
-        st.warning(f"שגיאה בקריאת projects_db: {e}")
+        st.error(f"שגיאת קריאה: {e}")
         return []
 
 
@@ -812,11 +822,13 @@ def write_projects_db(rows: list[dict]) -> None:
         data = [PROJECTS_DB_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_DB_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects_db: {e}")
 
 
+@st.cache_data(ttl=15)
 def read_tasks_log() -> list[dict]:
     """קריאת משימות מגיליון tasks_log בגוגל שיטס (Task Board)."""
     if spreadsheet is None:
@@ -845,6 +857,7 @@ def write_tasks_log(rows: list[dict]) -> None:
         data = [TASKS_LOG_COLUMNS] + [[str(r.get(c, "") or "") for c in TASKS_LOG_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks_log: {e}")
@@ -861,12 +874,14 @@ def _ensure_tasks_csv_schema() -> None:
             spreadsheet.add_worksheet(title='tasks', rows=100, cols=len(DAILY_TASKS_COLUMNS))
             worksheet = spreadsheet.worksheet('tasks')
             worksheet.update([DAILY_TASKS_COLUMNS], 'A1')
+            st.cache_data.clear()
         except Exception as e:
             st.warning(f"שגיאה ביצירת גיליון tasks: {e}")
 
 
+@st.cache_data(ttl=15)
 def read_daily_tasks() -> list[dict]:
-    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks - אותיות קטנות כמו quotes) - קריאה בזמן אמת, ללא מטמון."""
+    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
     if spreadsheet is None:
         return []
     _ensure_tasks_csv_schema()
@@ -892,6 +907,7 @@ def write_daily_tasks(rows: list[dict]) -> None:
         data = [DAILY_TASKS_COLUMNS] + [[str(r.get(c, "") or "") for c in DAILY_TASKS_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
@@ -959,7 +975,7 @@ def append_project_record(
     budget_amount: str | float = "",
 ) -> None:
     """Append a new project row to projects_db (Google Sheets)."""
-    _ensure_projects_db_schema()
+    _ensure_sheet('projects_db', PROJECTS_DB_COLUMNS)
     existing_rows = read_projects_db()
     project_id = next_project_id(existing_rows)
 
@@ -999,12 +1015,14 @@ def _ensure_projects_csv_schema() -> None:
             spreadsheet.add_worksheet(title='projects', rows=100, cols=len(PROJECTS_CSV_COLUMNS))
             worksheet = spreadsheet.worksheet('projects')
             worksheet.update([PROJECTS_CSV_COLUMNS], 'A1')
+            st.cache_data.clear()
         except Exception as e:
             st.warning(f"שגיאה ביצירת גיליון projects: {e}")
 
 
+@st.cache_data(ttl=15)
 def read_projects_csv() -> list[dict]:
-    """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects - אותיות קטנות כמו quotes) - קריאה בזמן אמת, ללא מטמון."""
+    """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects)."""
     if spreadsheet is None:
         return []
     _ensure_projects_csv_schema()
@@ -1039,6 +1057,7 @@ def write_projects_csv(rows: list[dict]) -> None:
         data = [PROJECTS_CSV_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_CSV_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
@@ -1226,12 +1245,14 @@ def _ensure_quotes_csv_schema() -> None:
             spreadsheet.add_worksheet(title='quotes', rows=100, cols=len(QUOTES_CSV_COLUMNS))
             worksheet = spreadsheet.worksheet('quotes')
             worksheet.update([QUOTES_CSV_COLUMNS], 'A1')
+            st.cache_data.clear()
         except Exception as e:
             st.warning(f"שגיאה ביצירת גיליון quotes: {e}")
 
 
+@st.cache_data(ttl=15)
 def read_quotes_csv() -> list[dict]:
-    """Read full quote form data from Google Sheets (quotes tab) - קריאה בזמן אמת, ללא מטמון."""
+    """קריאת נתוני טופס הצעות מחיר מגוגל שיטס (גיליון quotes)."""
     if spreadsheet is None:
         return []
     _ensure_quotes_csv_schema()
@@ -1267,6 +1288,7 @@ def write_quotes_csv(rows: list[dict]) -> None:
         data = [QUOTES_CSV_COLUMNS] + [[str(r.get(c, "") or "") for c in QUOTES_CSV_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.cache_data.clear()
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת quotes: {e}")
@@ -3402,10 +3424,9 @@ def show_tasks_page() -> None:
         else:
             df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
             df_projects = df_projects.fillna('')
-            # זמנית: ביטול סינון לפי Team - הצגת כל הפרויקטים
-            # if not is_admin():
-            #     current_user = _get_assignee_for_current_user()
-            #     df_projects = df_projects[df_projects["Team"].fillna("").apply(lambda t: _user_in_team(str(t), current_user))]
+            # Force display - הצגת מה שיש ביד לפני בדיקת ריקות
+            st.write(f"🔍 שורות שנמצאו לפני סינון: {len(df_projects)}")
+            st.dataframe(df_projects, use_container_width=True)
             if df_projects.empty:
                 st.info("אין פרויקטים להצגה.")
             else:
