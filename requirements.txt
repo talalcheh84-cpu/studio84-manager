@@ -3,3 +3,4 @@ pandas
 streamlit-calendar
 holidays
 docxtpl
+plotly
