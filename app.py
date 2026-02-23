@@ -111,6 +111,26 @@ QUOTES_REJECTED = QUOTES_ROOT / "Rejected"
 MESSAGES_COLUMNS = ["Timestamp", "Sender", "Recipient", "Type", "Message"]
 
 
+def _normalize_records_to_columns(records: list[dict], expected_columns: list[str]) -> list[dict]:
+    """מנרמל רשומות מגוגל שיטס כך ששמות העמודות יתאימו בדיוק (גם אם יש הבדל באותיות גדולות/קטנות)."""
+    if not records:
+        return []
+    key_lower_map = {col.lower(): col for col in expected_columns}
+    result = []
+    for r in records:
+        normalized = {}
+        for k, v in r.items():
+            if k and isinstance(k, str):
+                canonical = key_lower_map.get(k.strip().lower())
+                if canonical:
+                    normalized[canonical] = (str(v or "").strip())
+        for col in expected_columns:
+            if col not in normalized:
+                normalized[col] = ""
+        result.append(normalized)
+    return result
+
+
 def _ensure_messages_csv() -> None:
     """וידוא שקיים גיליון messages בגוגל שיטס - תקשורת מהירה."""
     if spreadsheet is None:
@@ -127,16 +147,15 @@ def _ensure_messages_csv() -> None:
 
 
 def _read_messages_df() -> pd.DataFrame:
-    """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
+    """קריאת הודעות תקשורת מהירה מגוגל שיטס (קריאה בזמן אמת, ללא מטמון)."""
     if spreadsheet is None:
         return pd.DataFrame(columns=MESSAGES_COLUMNS)
     _ensure_messages_csv()
     try:
         worksheet = spreadsheet.worksheet('messages')
         records = worksheet.get_all_records()
-        df = pd.DataFrame(records) if records else pd.DataFrame(columns=MESSAGES_COLUMNS)
-        if df.empty or "Timestamp" not in df.columns:
-            df = pd.DataFrame(columns=MESSAGES_COLUMNS)
+        normalized = _normalize_records_to_columns(records, MESSAGES_COLUMNS)
+        df = pd.DataFrame(normalized, columns=MESSAGES_COLUMNS) if normalized else pd.DataFrame(columns=MESSAGES_COLUMNS)
         return df
     except Exception:
         return pd.DataFrame(columns=MESSAGES_COLUMNS)
@@ -154,6 +173,7 @@ def _write_messages_df(df: pd.DataFrame) -> None:
         data = [df_safe.columns.values.tolist()] + df_safe.values.tolist()
         if data:
             worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת messages: {e}")
 
@@ -895,18 +915,14 @@ def _ensure_tasks_csv_schema() -> None:
 
 
 def read_daily_tasks() -> list[dict]:
-    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
+    """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks) - קריאה בזמן אמת, ללא מטמון."""
     if spreadsheet is None:
         return []
     _ensure_tasks_csv_schema()
     try:
         worksheet = spreadsheet.worksheet('tasks')
         records = worksheet.get_all_records()
-        rows = []
-        for r in records:
-            normalized = {c: (str(r.get(c, "") or "").strip()) for c in DAILY_TASKS_COLUMNS}
-            rows.append(normalized)
-        return rows
+        return _normalize_records_to_columns(records, DAILY_TASKS_COLUMNS)
     except Exception as e:
         st.warning(f"שגיאה בקריאת tasks: {e}")
         return []
@@ -923,6 +939,7 @@ def write_daily_tasks(rows: list[dict]) -> None:
         data = [DAILY_TASKS_COLUMNS] + [[str(r.get(c, "") or "") for c in DAILY_TASKS_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
 
@@ -1034,21 +1051,19 @@ def _ensure_projects_csv_schema() -> None:
 
 
 def read_projects_csv() -> list[dict]:
-    """קריאת כל הפרויקטים הפעילים מגוגל שיטס (גיליון projects)."""
+    """קריאת כל הפרויקטים הפעילים מגוגל שיטס (גיליון projects) - קריאה בזמן אמת, ללא מטמון."""
     if spreadsheet is None:
         return []
     _ensure_projects_csv_schema()
     try:
         worksheet = spreadsheet.worksheet('projects')
         records = worksheet.get_all_records()
-        rows = []
-        for r in records:
-            normalized = {c: (str(r.get(c, "") or "").strip()) for c in PROJECTS_CSV_COLUMNS}
-            status = normalized.get("Status") or "Active"
+        rows = _normalize_records_to_columns(records, PROJECTS_CSV_COLUMNS)
+        for r in rows:
+            status = r.get("Status") or "Active"
             if status not in PROJECTS_CSV_STATUSES:
                 status = "Active"
-            normalized["Status"] = status
-            rows.append(normalized)
+            r["Status"] = status
         return rows
     except Exception as e:
         st.warning(f"שגיאה בקריאת projects: {e}")
@@ -1066,6 +1081,7 @@ def write_projects_csv(rows: list[dict]) -> None:
         data = [PROJECTS_CSV_COLUMNS] + [[str(r.get(c, "") or "") for c in PROJECTS_CSV_COLUMNS] for r in rows]
         if data:
             worksheet.update(data, 'A1')
+        st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
 
