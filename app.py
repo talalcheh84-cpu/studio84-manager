@@ -781,10 +781,15 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
 
     try:
         dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"],
             app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"]
+            app_secret=st.secrets["DROPBOX_APP_SECRET"],
+            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
         )
+        try:
+            dbx.users_get_current_account()
+        except Exception as e:
+            st.error(f"🚨 שגיאת התחברות לדרופבוקס (הטוקן בכספת לא תקין): {e}")
+            return "", "", ""
 
         # Dropbox Business - שורש ל-Team Space במקום Member Space
         path_root = None
@@ -897,9 +902,9 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
         if not refresh_token or not str(refresh_token).strip():
             return ""
         dbx = dropbox.Dropbox(
-            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"],
             app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"]
+            app_secret=st.secrets["DROPBOX_APP_SECRET"],
+            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
         )
         path_root = None
         if PathRoot:
