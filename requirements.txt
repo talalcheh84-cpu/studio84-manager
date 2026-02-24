@@ -5,3 +5,4 @@ holidays
 gspread
 oauth2client
 dropbox
+docxtpl
