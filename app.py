@@ -3612,13 +3612,12 @@ def show_tasks_page() -> None:
                 for pidx, (_, prow) in enumerate(edited_projects.iterrows()):
                     pclient = (prow.get("Client") or "").strip()
                     pname = (prow.get("Project Name") or "").strip()
-                    raw_link = prow.get("Dropbox_Link")
-                    safe_link = str(raw_link).strip() if pd.notnull(raw_link) and str(raw_link).strip() != "nan" else ""
+                    raw_link = str(prow.get('Dropbox_Link', '')).strip()
                     pdisp = f"{pclient} | {pname}" if (pclient and pname) else ""
                     with proj_cols[pidx % len(proj_cols)]:
                         if pdisp:
-                            if safe_link.startswith("http"):
-                                st.link_button("📂 פתח תיקיית חומרים", safe_link, key=f'dropbox_tbl_link_{pidx}')
+                            if raw_link.startswith("http"):
+                                st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_tbl_link_{pidx}')
                             else:
                                 if st.button('צור תיקיית דרופבוקס', key=f'dropbox_tbl_{pidx}'):
                                     link = create_dropbox_folder_and_link(pname)
@@ -4724,29 +4723,28 @@ def main() -> None:
                         client = (row.get("Client") or "").strip()
                         project_name = (row.get("Project Name") or "").strip()
                         manager = (row.get("Manager") or "").strip()
-                        raw_link = row.get("Dropbox_Link")
-                        safe_link = str(raw_link).strip() if pd.notnull(raw_link) and str(raw_link).strip() != "nan" else ""
                         project_display = f"{client} | {project_name}" if (client and project_name) else ""
+                        raw_link = str(row.get('Dropbox_Link', '')).strip()
                         with cols[idx % len(cols)]:
                             if project_display and st.button(f'➕ הוסף משימה', key=f'bridge_task_{idx}'):
                                 st.session_state["bridge_project_name"] = project_display
                                 st.session_state["bridge_assignee"] = manager
                                 st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
-                            if project_display:
-                                if safe_link.startswith("http"):
-                                    st.link_button("📂 פתח תיקיית חומרים", safe_link, key=f'dropbox_link_{idx}')
-                                else:
-                                    if st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
-                                        link = create_dropbox_folder_and_link(project_name)
-                                        if link:
-                                            all_rows = read_projects()
-                                            for r in all_rows:
-                                                if (str(r.get("Client") or "").strip() == client and
-                                                        str(r.get("Project Name") or "").strip() == project_name):
-                                                    r["Dropbox_Link"] = link
-                                                    break
-                                            write_projects(all_rows)
-                                            st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
+                            # יצירת כפתור קישור אך ורק אם יש URL אמיתי
+                            if raw_link.startswith('http'):
+                                st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_link_{idx}')
+                            else:
+                                if project_display and st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
+                                    link = create_dropbox_folder_and_link(project_name)
+                                    if link:
+                                        all_rows = read_projects()
+                                        for r in all_rows:
+                                            if (str(r.get("Client") or "").strip() == client and
+                                                    str(r.get("Project Name") or "").strip() == project_name):
+                                                r["Dropbox_Link"] = link
+                                                break
+                                        write_projects(all_rows)
+                                        st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
                 if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
                     st.session_state.monitor_filter = None
                     st.session_state.monitor_title = ""
