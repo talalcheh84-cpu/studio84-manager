@@ -4731,8 +4731,11 @@ def main() -> None:
                                 st.session_state["bridge_assignee"] = manager
                                 st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
                             # יצירת כפתור קישור אך ורק אם יש URL אמיתי
-                            if raw_link.startswith('http'):
-                                st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_link_{idx}')
+                            if isinstance(raw_link, str) and raw_link.startswith('http'):
+                                try:
+                                    st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_safe_link_{idx}')
+                                except Exception:
+                                    st.warning("🔗 קישור שבור")
                             else:
                                 # כאן שמור את קוד יצירת התיקייה הקיים (st.button של "צור תיקיית פרויקט בדרופבוקס" וכו')
                                 if project_display and st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
