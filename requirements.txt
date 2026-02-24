@@ -2,7 +2,6 @@ streamlit
 pandas
 streamlit-calendar
 holidays
-docxtpl
-plotly
 gspread
 oauth2client
+dropbox
