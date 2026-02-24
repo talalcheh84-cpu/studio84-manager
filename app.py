@@ -270,14 +270,24 @@ def _render_dropbox_refresh_token_sidebar() -> None:
                         "client_secret": app_secret,
                     },
                 )
-                r.raise_for_status()
-                data = r.json()
+                # דיבאג: הצגת סטטוס ותשובה גולמית
+                st.sidebar.write(f"**Status:** {r.status_code}")
+                try:
+                    data = r.json()
+                    st.sidebar.json(data)
+                except Exception:
+                    st.sidebar.text("תשובה גולמית (לא JSON):")
+                    st.sidebar.code(r.text, language=None)
+                    data = {}
+                if data.get("error"):
+                    err_msg = data.get("error_description", data.get("error", ""))
+                    st.sidebar.error(f"שגיאה מדרופבוקס: {data.get('error')} – {err_msg}")
                 rt = data.get("refresh_token")
                 if rt:
-                    st.sidebar.success("המפתח הקבוע הופק בהצלחה. העתק אותו ל-Streamlit Secrets:")
+                    st.sidebar.success("המפתח הקבוע הופק בהצלחה. העתק אותו למטה:")
                     st.sidebar.code(rt, language=None)
                     st.sidebar.info("הוסף ל-Secrets: DROPBOX_REFRESH_TOKEN = \"<המפתח שהעתקת>\"")
-                else:
+                elif not data.get("error"):
                     st.sidebar.error("לא נמצא refresh_token בתשובה. ייתכן שהקוד פג תוקף – נסה שוב.")
             except requests.RequestException as e:
                 st.sidebar.error(f"שגיאה בבקשה: {e}")
