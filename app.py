@@ -812,17 +812,17 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
         # File Request לחומרים נכנסים - try-except נפרד כדי שלא יכשיל את יתר הלינקים
         upload_link = ""
         try:
-            dest = materials_folder
+            dest = f"{base_path}/{clean_name}/01_Client_Materials"
             if not dest.startswith("/"):
                 dest = "/" + dest
-            fr = dbx.file_requests_create(
+            req = dbx.file_requests_create(
                 title=f"Upload Materials - {clean_name}",
                 destination=dest,
             )
-            if fr is not None:
-                url_val = getattr(fr, "url", None)
-                if url_val and isinstance(url_val, str) and url_val.strip() and url_val.strip() != "0":
-                    upload_link = url_val.strip()
+            if req is not None and hasattr(req, "url"):
+                url_val = req.url
+                if url_val and str(url_val).strip() and str(url_val).strip() != "0":
+                    upload_link = str(url_val).strip()
         except Exception:
             upload_link = ""
 
@@ -2940,18 +2940,14 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
-                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
-                            if main_link or upload_link or deliverables_link:
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    if main_link:
-                                        st.link_button("📂 תיקייה ראשית", main_link)
-                                with col2:
-                                    if upload_link:
-                                        st.link_button("☁️ העלאת חומרים", upload_link)
-                                with col3:
-                                    if deliverables_link:
-                                        st.link_button("📤 תוצרים", deliverables_link)
+                            st.success("✅ הפרויקט, התיקיות ובקשת הקבצים הוקמו בהצלחה!")
+                            col1, col2, col3 = st.columns(3)
+                            if (main_link or "").startswith("http"):
+                                col1.link_button("📂 תיקיית פרויקט ראשית", main_link)
+                            if (upload_link or "").startswith("http"):
+                                col2.link_button("📥 לינק לבקשת חומרים", upload_link)
+                            if (deliverables_link or "").startswith("http"):
+                                col3.link_button("📤 תיקיית תוצרים", deliverables_link)
                         else:
                             team_str = ", ".join(assigned_team) if assigned_team else ""
                             contacts_str = ", ".join(project_contacts) if project_contacts else ""
@@ -2993,18 +2989,14 @@ def show_quotes_management_page() -> None:
                                 )
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
-                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
-                            if main_link or upload_link or deliverables_link:
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    if main_link:
-                                        st.link_button("📂 תיקייה ראשית", main_link)
-                                with col2:
-                                    if upload_link:
-                                        st.link_button("☁️ העלאת חומרים", upload_link)
-                                with col3:
-                                    if deliverables_link:
-                                        st.link_button("📤 תוצרים", deliverables_link)
+                            st.success("✅ הפרויקט, התיקיות ובקשת הקבצים הוקמו בהצלחה!")
+                            col1, col2, col3 = st.columns(3)
+                            if (main_link or "").startswith("http"):
+                                col1.link_button("📂 תיקיית פרויקט ראשית", main_link)
+                            if (upload_link or "").startswith("http"):
+                                col2.link_button("📥 לינק לבקשת חומרים", upload_link)
+                            if (deliverables_link or "").startswith("http"):
+                                col3.link_button("📤 תיקיית תוצרים", deliverables_link)
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str = ", ".join(assigned_team) if assigned_team else "צוות"
@@ -3020,12 +3012,12 @@ def show_quotes_management_page() -> None:
 לקוח: {client}
 
 📂 שם התיקייה בדרופבוקס: Projects / {client} / {project}"""
-                    if main_link_body:
-                        body += f"\n📂 לינק לתיקייה הראשית: {main_link_body}"
-                    if upload_link_body:
-                        body += f"\n☁️ לינק להעלאת חומרים: {upload_link_body}"
-                    if not main_link_body and not upload_link_body:
-                        body += "\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
+                    if main_link_body and main_link_body.startswith("http"):
+                        body += f"\n\n📂 תיקיית פרויקט (דרופבוקס): {main_link_body}"
+                    if upload_link_body and upload_link_body.startswith("http"):
+                        body += f"\n📥 להעלאת חומרים ע\"י הלקוח: {upload_link_body}"
+                    if not (main_link_body and main_link_body.startswith("http")) and not (upload_link_body and upload_link_body.startswith("http")):
+                        body += "\n\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
                     if project_template:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template)
                     body += "\n\nבהצלחה!"
@@ -3156,8 +3148,14 @@ def show_quotes_management_page() -> None:
 לינק לתיקייה:
 
 {project_path}
-
-בהצלחה!"""
+"""
+                        if main_link_ap or upload_link_ap:
+                            email_body += "\n"
+                            if main_link_ap and main_link_ap.startswith("http"):
+                                email_body += f"📂 תיקיית פרויקט (דרופבוקס): {main_link_ap}\n"
+                            if upload_link_ap and upload_link_ap.startswith("http"):
+                                email_body += f"📥 להעלאת חומרים ע\"י הלקוח: {upload_link_ap}\n"
+                        email_body += "\nבהצלחה!"
 
                         gmail_url = build_gmail_link(
                             manager_email,
@@ -3172,7 +3170,14 @@ def show_quotes_management_page() -> None:
                             email_body,
                         )
 
-                        st.success("הפרויקט נפתח ונשמר בגיליון projects.")
+                        st.success("✅ הפרויקט, התיקיות ובקשת הקבצים הוקמו בהצלחה!")
+                        col1_ap, col2_ap, col3_ap = st.columns(3)
+                        if (main_link_ap or "").startswith("http"):
+                            col1_ap.link_button("📂 תיקיית פרויקט ראשית", main_link_ap)
+                        if (upload_link_ap or "").startswith("http"):
+                            col2_ap.link_button("📥 לינק לבקשת חומרים", upload_link_ap)
+                        if (deliverables_link_ap or "").startswith("http"):
+                            col3_ap.link_button("📤 תיקיית תוצרים", deliverables_link_ap)
                         col_gmail_proj, col_outlook_proj = st.columns(2)
                         with col_gmail_proj:
                             st.link_button("📧 פתח טיוטה ב-Gmail למנהל הפרויקט", gmail_url)
@@ -3561,18 +3566,14 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
-                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
-                            if main_link_fb or upload_link_fb or deliverables_link_fb:
-                                col1_fb, col2_fb, col3_fb = st.columns(3)
-                                with col1_fb:
-                                    if main_link_fb:
-                                        st.link_button("📂 תיקייה ראשית", main_link_fb)
-                                with col2_fb:
-                                    if upload_link_fb:
-                                        st.link_button("☁️ העלאת חומרים", upload_link_fb)
-                                with col3_fb:
-                                    if deliverables_link_fb:
-                                        st.link_button("📤 תוצרים", deliverables_link_fb)
+                            st.success("✅ הפרויקט, התיקיות ובקשת הקבצים הוקמו בהצלחה!")
+                            col1_fb, col2_fb, col3_fb = st.columns(3)
+                            if (main_link_fb or "").startswith("http"):
+                                col1_fb.link_button("📂 תיקיית פרויקט ראשית", main_link_fb)
+                            if (upload_link_fb or "").startswith("http"):
+                                col2_fb.link_button("📥 לינק לבקשת חומרים", upload_link_fb)
+                            if (deliverables_link_fb or "").startswith("http"):
+                                col3_fb.link_button("📤 תיקיית תוצרים", deliverables_link_fb)
                         else:
                             team_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else ""
                             contacts_str_fb = ", ".join(project_contacts_fb) if project_contacts_fb else ""
@@ -3613,18 +3614,14 @@ def show_quotes_management_page() -> None:
                                 )
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
-                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
-                            if main_link_fb or upload_link_fb or deliverables_link_fb:
-                                col1_fb, col2_fb, col3_fb = st.columns(3)
-                                with col1_fb:
-                                    if main_link_fb:
-                                        st.link_button("📂 תיקייה ראשית", main_link_fb)
-                                with col2_fb:
-                                    if upload_link_fb:
-                                        st.link_button("☁️ העלאת חומרים", upload_link_fb)
-                                with col3_fb:
-                                    if deliverables_link_fb:
-                                        st.link_button("📤 תוצרים", deliverables_link_fb)
+                            st.success("✅ הפרויקט, התיקיות ובקשת הקבצים הוקמו בהצלחה!")
+                            col1_fb, col2_fb, col3_fb = st.columns(3)
+                            if (main_link_fb or "").startswith("http"):
+                                col1_fb.link_button("📂 תיקיית פרויקט ראשית", main_link_fb)
+                            if (upload_link_fb or "").startswith("http"):
+                                col2_fb.link_button("📥 לינק לבקשת חומרים", upload_link_fb)
+                            if (deliverables_link_fb or "").startswith("http"):
+                                col3_fb.link_button("📤 תיקיית תוצרים", deliverables_link_fb)
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else "צוות"
@@ -3640,12 +3637,12 @@ def show_quotes_management_page() -> None:
 לקוח: {client_val}
 
 📂 שם התיקייה בדרופבוקס: Projects / {client_val} / {project_val}"""
-                    if main_link_body_fb:
-                        body += f"\n📂 לינק לתיקייה הראשית: {main_link_body_fb}"
-                    if upload_link_body_fb:
-                        body += f"\n☁️ לינק להעלאת חומרים: {upload_link_body_fb}"
-                    if not main_link_body_fb and not upload_link_body_fb:
-                        body += "\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
+                    if main_link_body_fb and main_link_body_fb.startswith("http"):
+                        body += f"\n\n📂 תיקיית פרויקט (דרופבוקס): {main_link_body_fb}"
+                    if upload_link_body_fb and upload_link_body_fb.startswith("http"):
+                        body += f"\n📥 להעלאת חומרים ע\"י הלקוח: {upload_link_body_fb}"
+                    if not (main_link_body_fb and main_link_body_fb.startswith("http")) and not (upload_link_body_fb and upload_link_body_fb.startswith("http")):
+                        body += "\n\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
                     if project_template_fb:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template_fb)
                     body += "\n\nבהצלחה!"
