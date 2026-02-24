@@ -3561,7 +3561,16 @@ def show_tasks_page() -> None:
             df_projects = df_projects.fillna('')
             # Force display - הצגת מה שיש ביד לפני בדיקת ריקות
             st.write(f"🔍 שורות שנמצאו לפני סינון: {len(df_projects)}")
-            st.dataframe(df_projects, use_container_width=True)
+            st.dataframe(
+                df_projects,
+                use_container_width=True,
+                column_config={
+                    "Dropbox_Link": st.column_config.LinkColumn(
+                        "תיקיית דרופבוקס",
+                        display_text="תיקיית דרופבוקס",
+                    ),
+                },
+            )
             if df_projects.empty:
                 st.info("אין פרויקטים להצגה.")
             else:
@@ -3590,6 +3599,10 @@ def show_tasks_page() -> None:
                                 format="₪%d",
                                 default=0,
                             ),
+                            "Dropbox_Link": st.column_config.LinkColumn(
+                                "תיקיית דרופבוקס",
+                                display_text="תיקיית דרופבוקס",
+                            ),
                         },
                         key="projects_editor",
                     )
@@ -3612,28 +3625,6 @@ def show_tasks_page() -> None:
                     write_projects(updated)
                     st.success("השינויים נשמרו בהצלחה!")
                     st.rerun()
-                st.markdown("**פעולות Dropbox**")
-                proj_cols = st.columns(min(4, len(edited_projects)) if len(edited_projects) > 0 else 1)
-                for pidx, (_, prow) in enumerate(edited_projects.iterrows()):
-                    pclient = (prow.get("Client") or "").strip()
-                    pname = (prow.get("Project Name") or "").strip()
-                    raw_link = str(prow.get('Dropbox_Link', '')).strip()
-                    pdisp = f"{pclient} | {pname}" if (pclient and pname) else ""
-                    with proj_cols[pidx % len(proj_cols)]:
-                        if pdisp:
-                            if raw_link.startswith("http"):
-                                st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_tbl_link_{pidx}')
-                            else:
-                                if st.button('צור תיקיית דרופבוקס', key=f'dropbox_tbl_{pidx}'):
-                                    link = create_dropbox_folder_and_link(pname)
-                                    if link:
-                                        all_rows = read_projects()
-                                        for r in all_rows:
-                                            if (str(r.get("Client") or "").strip() == pclient and str(r.get("Project Name") or "").strip() == pname):
-                                                r["Dropbox_Link"] = link
-                                                break
-                                        write_projects(all_rows)
-                                        st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
 
     elif sub_nav == "רשימת משימות (Task Board)":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
@@ -4711,7 +4702,16 @@ def main() -> None:
                 else:
                     try:
                         edited_filtered_df = st.data_editor(
-                            filtered_df, hide_index=True, use_container_width=True, key="drilldown_editor"
+                            filtered_df,
+                            hide_index=True,
+                            use_container_width=True,
+                            key="drilldown_editor",
+                            column_config={
+                                "Dropbox_Link": st.column_config.LinkColumn(
+                                    "תיקיית דרופבוקס",
+                                    display_text="תיקיית דרופבוקס",
+                                ),
+                            },
                         )
                     except Exception as e:
                         st.error(f"שגיאה בהצגת נתונים: {e}")
@@ -4722,44 +4722,6 @@ def main() -> None:
                         write_projects(updated)
                         st.success("הנתונים עודכנו בהצלחה!")
                         st.rerun()
-                    st.markdown("**פעולות מהירות:**")
-                    cols = st.columns(min(4, len(filtered_df)) if len(filtered_df) > 0 else 1)
-                    for idx, (_, row) in enumerate(filtered_df.iterrows()):
-                        client = (row.get("Client") or "").strip()
-                        project_name = (row.get("Project Name") or "").strip()
-                        manager = (row.get("Manager") or "").strip()
-                        project_display = f"{client} | {project_name}" if (client and project_name) else ""
-                        raw_link = str(row.get('Dropbox_Link', '')).strip()
-                        with cols[idx % len(cols)]:
-                            if project_display and st.button(f'➕ הוסף משימה', key=f'bridge_task_{idx}'):
-                                st.session_state["bridge_project_name"] = project_display
-                                st.session_state["bridge_assignee"] = manager
-                                st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
-                            # יצירת כפתור קישור אך ורק אם יש URL אמיתי
-                            if isinstance(raw_link, str) and raw_link.startswith('http'):
-                                try:
-                                    st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_safe_link_{idx}')
-                                except Exception:
-                                    st.warning("🔗 קישור שבור")
-                            else:
-                                # כאן שמור את קוד יצירת התיקייה הקיים (st.button של "צור תיקיית פרויקט בדרופבוקס" וכו')
-                                if project_display and st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
-                                    safe_client = sanitize_filename_part(client)
-                                    safe_project = sanitize_filename_part(project_name)
-                                    dropbox_path = f"Projects/{safe_client}/{safe_project}"
-                                    try:
-                                        link = create_dropbox_folder_and_link(project_name, folder_path=dropbox_path)
-                                        if link:
-                                            all_rows = read_projects()
-                                            for r in all_rows:
-                                                if (str(r.get("Client") or "").strip() == client and
-                                                        str(r.get("Project Name") or "").strip() == project_name):
-                                                    r["Dropbox_Link"] = link
-                                                    break
-                                            write_projects(all_rows)
-                                            st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
-                                    except Exception as e:
-                                        st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
                 if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
                     st.session_state.monitor_filter = None
                     st.session_state.monitor_title = ""
