@@ -920,6 +920,9 @@ def read_projects() -> list[dict]:
         worksheet = spreadsheet.worksheet('projects')
         df = _read_worksheet_safe(worksheet, PROJECTS_DB_COLUMNS)
         df.columns = df.columns.str.strip()
+        # ניקוי שורות רפאים - שורות ללא שם פרויקט
+        if "Project Name" in df.columns and not df.empty:
+            df = df[df["Project Name"].astype(str).str.strip() != ""]
         rows = df.to_dict(orient='records')
         for r in rows:
             status = (r.get("Status") or DEFAULT_PROJECT_STATUS).strip()
@@ -1105,6 +1108,11 @@ def append_project_record(
         except (TypeError, ValueError):
             amt_str = ""
 
+    # Dropbox_Link: never save 0 - use empty string if missing or invalid
+    dropbox_link_safe = ""
+    if dropbox_link and str(dropbox_link).strip() and str(dropbox_link).strip() != "0":
+        dropbox_link_safe = str(dropbox_link).strip()
+
     row = {
         "Project ID": str(project_id),
         "Client": (client or "").strip(),
@@ -1114,7 +1122,7 @@ def append_project_record(
         "Status": clean_status,
         "Start Date": start_date_str,
         "Dropbox Path": (dropbox_path or "").strip(),
-        "Dropbox_Link": (dropbox_link or "").strip(),
+        "Dropbox_Link": dropbox_link_safe,
         'היקף כספי (₪)': amt_str,
     }
 
@@ -2736,14 +2744,6 @@ def show_quotes_management_page() -> None:
                         value=date.today() + timedelta(days=14),
                         key=f"kickoff_task_deadline_{kickoff_key}",
                     )
-                    if st.button("📂 פתח תיקיית חומרים (להעתקת לינק דרופבוקס)", key=f"open_folder_{kickoff_key}"):
-                        os.makedirs(materials_path, exist_ok=True)
-                        subprocess.Popen(f'explorer "{materials_path}"', shell=True)
-                    dropbox_link = st.text_input(
-                        "🔗 לינק לתיקיית חומרים (Dropbox Web Link)",
-                        key=f"kickoff_dropbox_{kickoff_key}",
-                        placeholder="הדבק כאן את הלינק לתיקיית החומרים...",
-                    )
                     personal_message = st.text_area(
                         "הודעה אישית (אופציונלי)",
                         key=f"kickoff_message_{kickoff_key}",
@@ -2764,6 +2764,7 @@ def show_quotes_management_page() -> None:
                         if exists_db:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client, project, status="בעבודה")
+                            st.cache_data.clear()
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv:
@@ -2790,6 +2791,7 @@ def show_quotes_management_page() -> None:
                                 budget_amount=budget_amt,
                                 dropbox_link=generated_dropbox_link,
                             )
+                            st.cache_data.clear()
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         else:
@@ -2820,6 +2822,7 @@ def show_quotes_management_page() -> None:
                                 budget_amount=budget_amt,
                                 dropbox_link=generated_dropbox_link,
                             )
+                            st.cache_data.clear()
                             project_display = f"{client} | {project}"
                             if assigned_team and project_template:
                                 append_kickoff_tasks_to_csv(
@@ -2841,7 +2844,7 @@ def show_quotes_management_page() -> None:
 לקוח: {client}
 
 📂 שם התיקייה בדרופבוקס: Projects / {client} / {project}
-☁️ לינק ישיר לחומרים: {dropbox_link or '(לא צוין)'}"""
+☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"""
                     if project_template:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template)
                     body += "\n\nבהצלחה!"
@@ -2936,6 +2939,7 @@ def show_quotes_management_page() -> None:
                             budget_amount=budget_amt,
                             dropbox_link=generated_dropbox_link,
                         )
+                        st.cache_data.clear()
 
                         # עדכון סטטוס ההצעה ל-Approved בגיליון quotes
                         try:
@@ -3321,14 +3325,6 @@ def show_quotes_management_page() -> None:
                         value=date.today() + timedelta(days=14),
                         key=f"kickoff_task_deadline_{kickoff_key_fb}",
                     )
-                    if st.button("📂 פתח תיקיית חומרים (להעתקת לינק דרופבוקס)", key=f"open_folder_{kickoff_key_fb}"):
-                        os.makedirs(materials_path_fb, exist_ok=True)
-                        subprocess.Popen(f'explorer "{materials_path_fb}"', shell=True)
-                    dropbox_link = st.text_input(
-                        "🔗 לינק לתיקיית חומרים (Dropbox Web Link)",
-                        key=f"kickoff_dropbox_{kickoff_key_fb}",
-                        placeholder="הדבק כאן את הלינק לתיקיית החומרים...",
-                    )
                     personal_message = st.text_area(
                         "הודעה אישית (אופציונלי)",
                         key=f"kickoff_message_{kickoff_key_fb}",
@@ -3349,6 +3345,7 @@ def show_quotes_management_page() -> None:
                         if exists_db_fb:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client_val, project_val, status="בעבודה")
+                            st.cache_data.clear()
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv_fb:
@@ -3374,6 +3371,7 @@ def show_quotes_management_page() -> None:
                                 budget_amount=budget_amt_fb,
                                 dropbox_link=generated_dropbox_link_fb,
                             )
+                            st.cache_data.clear()
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         else:
@@ -3403,6 +3401,7 @@ def show_quotes_management_page() -> None:
                                 budget_amount=budget_amt_fb,
                                 dropbox_link=generated_dropbox_link_fb,
                             )
+                            st.cache_data.clear()
                             project_display_fb = f"{client_val} | {project_val}"
                             if assigned_team_fb and project_template_fb:
                                 append_kickoff_tasks_to_csv(
@@ -3424,7 +3423,7 @@ def show_quotes_management_page() -> None:
 לקוח: {client_val}
 
 📂 שם התיקייה בדרופבוקס: Projects / {client_val} / {project_val}
-☁️ לינק ישיר לחומרים: {dropbox_link or '(לא צוין)'}"""
+☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"""
                     if project_template_fb:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template_fb)
                     body += "\n\nבהצלחה!"
