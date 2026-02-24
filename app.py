@@ -2,6 +2,7 @@ import html
 import io
 import re
 import requests
+import time
 import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -779,13 +780,10 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
     deliverables_folder = f"{main_folder}/02_Studio_Deliverables"
 
     try:
-        refresh_token = st.secrets.get("DROPBOX_REFRESH_TOKEN", "")
-        if not refresh_token or not str(refresh_token).strip():
-            return None
         dbx = dropbox.Dropbox(
             app_key=st.secrets["DROPBOX_APP_KEY"],
             app_secret=st.secrets["DROPBOX_APP_SECRET"],
-            oauth2_refresh_token=refresh_token,
+            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"],
         )
 
         # Dropbox Business - שורש ל-Team Space במקום Member Space
@@ -875,7 +873,7 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
 
         return (main_link, upload_link, deliverables_link)
     except Exception:
-        return None
+        raise
 
 
 def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = None) -> str | None:
@@ -1127,7 +1125,7 @@ def read_projects() -> list[dict]:
         return []
 
 
-def write_projects(rows: list[dict]) -> None:
+def write_projects(rows: list[dict], skip_rerun: bool = False) -> None:
     """שמירת פרויקטים לגיליון projects בגוגל שיטס."""
     if spreadsheet is None:
         err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
@@ -1141,7 +1139,8 @@ def write_projects(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
-        st.rerun()
+        if not skip_rerun:
+            st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
 
@@ -1292,6 +1291,7 @@ def append_project_record(
     dropbox_main: str = "",
     dropbox_upload: str = "",
     dropbox_deliverables: str = "",
+    skip_rerun: bool = False,
 ) -> None:
     """Append a new project row to projects (Google Sheets)."""
     _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
@@ -1322,7 +1322,7 @@ def append_project_record(
     }
 
     existing_rows.append(row)
-    write_projects(existing_rows)
+    write_projects(existing_rows, skip_rerun=skip_rerun)
 
 
 def _ensure_projects_csv_schema() -> None:
@@ -2974,8 +2974,8 @@ def show_quotes_management_page() -> None:
                                     result = create_studio_dropbox_structure(project)
                                     if result:
                                         main_link, upload_link, deliverables_link = result
-                            except BaseException as e:
-                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
+                            except Exception as e:
+                                st.error(f'🚨 שגיאת דרופבוקס: {e}')
                             append_project_record(
                                 client=client,
                                 project_name=project,
@@ -2987,6 +2987,7 @@ def show_quotes_management_page() -> None:
                                 dropbox_main=main_link,
                                 dropbox_upload=upload_link,
                                 dropbox_deliverables=deliverables_link,
+                                skip_rerun=True,
                             )
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
@@ -2999,6 +3000,8 @@ def show_quotes_management_page() -> None:
                                 col2.link_button("📥 לינק לבקשת חומרים", upload_link)
                             if (deliverables_link or "").startswith("http"):
                                 col3.link_button("📤 תיקיית תוצרים", deliverables_link)
+                            time.sleep(10)
+                            st.rerun()
                         else:
                             team_str = ", ".join(assigned_team) if assigned_team else ""
                             contacts_str = ", ".join(project_contacts) if project_contacts else ""
@@ -3013,8 +3016,8 @@ def show_quotes_management_page() -> None:
                                     result = create_studio_dropbox_structure(project)
                                     if result:
                                         main_link, upload_link, deliverables_link = result
-                            except BaseException as e:
-                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
+                            except Exception as e:
+                                st.error(f'🚨 שגיאת דרופבוקס: {e}')
                             append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
@@ -3028,6 +3031,7 @@ def show_quotes_management_page() -> None:
                                 dropbox_main=main_link,
                                 dropbox_upload=upload_link,
                                 dropbox_deliverables=deliverables_link,
+                                skip_rerun=True,
                             )
                             st.cache_data.clear()
                             project_display = f"{client} | {project}"
@@ -3048,6 +3052,8 @@ def show_quotes_management_page() -> None:
                                 col2.link_button("📥 לינק לבקשת חומרים", upload_link)
                             if (deliverables_link or "").startswith("http"):
                                 col3.link_button("📤 תיקיית תוצרים", deliverables_link)
+                            time.sleep(10)
+                            st.rerun()
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str = ", ".join(assigned_team) if assigned_team else "צוות"
@@ -3153,8 +3159,8 @@ def show_quotes_management_page() -> None:
                                 result_ap = create_studio_dropbox_structure(project)
                                 if result_ap:
                                     main_link_ap, upload_link_ap, deliverables_link_ap = result_ap
-                        except BaseException as e:
-                            st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
+                        except Exception as e:
+                            st.error(f'🚨 שגיאת דרופבוקס: {e}')
                         append_project_record(
                             client=client,
                             project_name=project,
@@ -3166,6 +3172,7 @@ def show_quotes_management_page() -> None:
                             dropbox_main=main_link_ap,
                             dropbox_upload=upload_link_ap,
                             dropbox_deliverables=deliverables_link_ap,
+                            skip_rerun=True,
                         )
                         st.cache_data.clear()
 
@@ -3234,6 +3241,8 @@ def show_quotes_management_page() -> None:
                             st.link_button("📧 פתח טיוטה ב-Gmail למנהל הפרויקט", gmail_url)
                         with col_outlook_proj:
                             st.link_button("✉️ פתח טיוטה ב-Outlook למנהל הפרויקט", mailto_url)
+                        time.sleep(10)
+                        st.rerun()
                     except Exception as e:
                         st.error(f"שגיאה בפתיחת הפרויקט ושמירתו: {e}")
 
@@ -3600,8 +3609,8 @@ def show_quotes_management_page() -> None:
                                     result_fb = create_studio_dropbox_structure(project_val)
                                     if result_fb:
                                         main_link_fb, upload_link_fb, deliverables_link_fb = result_fb
-                            except BaseException as e:
-                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
+                            except Exception as e:
+                                st.error(f'🚨 שגיאת דרופבוקס: {e}')
                             append_project_record(
                                 client=client_val,
                                 project_name=project_val,
@@ -3613,6 +3622,7 @@ def show_quotes_management_page() -> None:
                                 dropbox_main=main_link_fb,
                                 dropbox_upload=upload_link_fb,
                                 dropbox_deliverables=deliverables_link_fb,
+                                skip_rerun=True,
                             )
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
@@ -3625,6 +3635,8 @@ def show_quotes_management_page() -> None:
                                 col2_fb.link_button("📥 לינק לבקשת חומרים", upload_link_fb)
                             if (deliverables_link_fb or "").startswith("http"):
                                 col3_fb.link_button("📤 תיקיית תוצרים", deliverables_link_fb)
+                            time.sleep(10)
+                            st.rerun()
                         else:
                             team_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else ""
                             contacts_str_fb = ", ".join(project_contacts_fb) if project_contacts_fb else ""
@@ -3638,8 +3650,8 @@ def show_quotes_management_page() -> None:
                                     result_fb = create_studio_dropbox_structure(project_val)
                                     if result_fb:
                                         main_link_fb, upload_link_fb, deliverables_link_fb = result_fb
-                            except BaseException as e:
-                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
+                            except Exception as e:
+                                st.error(f'🚨 שגיאת דרופבוקס: {e}')
                             append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
@@ -3653,6 +3665,7 @@ def show_quotes_management_page() -> None:
                                 dropbox_main=main_link_fb,
                                 dropbox_upload=upload_link_fb,
                                 dropbox_deliverables=deliverables_link_fb,
+                                skip_rerun=True,
                             )
                             st.cache_data.clear()
                             project_display_fb = f"{client_val} | {project_val}"
@@ -3673,6 +3686,8 @@ def show_quotes_management_page() -> None:
                                 col2_fb.link_button("📥 לינק לבקשת חומרים", upload_link_fb)
                             if (deliverables_link_fb or "").startswith("http"):
                                 col3_fb.link_button("📤 תיקיית תוצרים", deliverables_link_fb)
+                            time.sleep(10)
+                            st.rerun()
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else "צוות"
