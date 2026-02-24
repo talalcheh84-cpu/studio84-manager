@@ -3560,11 +3560,13 @@ def show_tasks_page() -> None:
                 for pidx, (_, prow) in enumerate(edited_projects.iterrows()):
                     pclient = (prow.get("Client") or "").strip()
                     pname = (prow.get("Project Name") or "").strip()
-                    plink = (prow.get("Dropbox_Link") or "").strip()
+                    plink = str(prow.get("Dropbox_Link", "") or "").strip()
                     pdisp = f"{pclient} | {pname}" if (pclient and pname) else ""
                     with proj_cols[pidx % len(proj_cols)]:
                         if pdisp:
-                            if not plink:
+                            if plink.startswith("http"):
+                                st.link_button("📂 פתח תיקיית חומרים", plink, key=f'dropbox_tbl_link_{pidx}')
+                            else:
                                 if st.button('צור תיקיית דרופבוקס', key=f'dropbox_tbl_{pidx}'):
                                     link = create_dropbox_folder_and_link(pname)
                                     if link:
@@ -3575,8 +3577,6 @@ def show_tasks_page() -> None:
                                                 break
                                         write_projects(all_rows)
                                         st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
-                            else:
-                                st.link_button("📂 פתח תיקיית חומרים", plink, key=f'dropbox_tbl_link_{pidx}')
 
     elif sub_nav == "רשימת משימות (Task Board)":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
@@ -4671,7 +4671,7 @@ def main() -> None:
                         client = (row.get("Client") or "").strip()
                         project_name = (row.get("Project Name") or "").strip()
                         manager = (row.get("Manager") or "").strip()
-                        dropbox_link = (row.get("Dropbox_Link") or "").strip()
+                        dropbox_link = str(row.get("Dropbox_Link", "") or "").strip()
                         project_display = f"{client} | {project_name}" if (client and project_name) else ""
                         with cols[idx % len(cols)]:
                             if project_display and st.button(f'➕ הוסף משימה', key=f'bridge_task_{idx}'):
@@ -4679,7 +4679,9 @@ def main() -> None:
                                 st.session_state["bridge_assignee"] = manager
                                 st.success('הפרויקט נשמר בזיכרון. עבור ללשונית "רשימת משימות (Task Board)" כדי להזין את פרטי המשימה!')
                             if project_display:
-                                if not dropbox_link:
+                                if dropbox_link.startswith("http"):
+                                    st.link_button("📂 פתח תיקיית חומרים", dropbox_link, key=f'dropbox_link_{idx}')
+                                else:
                                     if st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
                                         link = create_dropbox_folder_and_link(project_name)
                                         if link:
@@ -4691,8 +4693,6 @@ def main() -> None:
                                                     break
                                             write_projects(all_rows)
                                             st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
-                                else:
-                                    st.link_button("📂 פתח תיקיית חומרים", dropbox_link, key=f'dropbox_link_{idx}')
                 if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
                     st.session_state.monitor_filter = None
                     st.session_state.monitor_title = ""
