@@ -4734,6 +4734,7 @@ def main() -> None:
                             if raw_link.startswith('http'):
                                 st.link_button("📂 פתח תיקיית חומרים", raw_link, key=f'dropbox_link_{idx}')
                             else:
+                                # כאן שמור את קוד יצירת התיקייה הקיים (st.button של "צור תיקיית פרויקט בדרופבוקס" וכו')
                                 if project_display and st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
                                     link = create_dropbox_folder_and_link(project_name)
                                     if link:
