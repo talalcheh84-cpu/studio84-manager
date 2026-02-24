@@ -163,7 +163,7 @@ def _ensure_messages_csv() -> None:
     spreadsheet.worksheet('messages')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def _read_messages_df() -> pd.DataFrame:
     """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
     if spreadsheet is None:
@@ -769,7 +769,7 @@ def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
     spreadsheet.worksheet(sheet_name)  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def load_contacts() -> pd.DataFrame:
     """טוען אנשי קשר מגיליון contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -803,7 +803,7 @@ def save_contacts(df: pd.DataFrame) -> None:
         st.warning(f"שגיאה בשמירת contacts: {e}")
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_project_contacts() -> list[dict]:
     """קריאת אנשי קשר לפרויקטים מגיליון project_contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -908,7 +908,7 @@ _LEGACY_PROJECT_STATUS_MAP = {
 }
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_projects() -> list[dict]:
     """קריאת פרויקטים מגיליון projects בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
@@ -952,7 +952,7 @@ def write_projects(rows: list[dict]) -> None:
         st.warning(f"שגיאה בשמירת projects: {e}")
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_tasks() -> list[dict]:
     """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board)."""
     if spreadsheet is None:
@@ -995,7 +995,7 @@ def _ensure_tasks_csv_schema() -> None:
     spreadsheet.worksheet('tasks')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_daily_tasks() -> list[dict]:
     """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
     if spreadsheet is None:
@@ -1129,7 +1129,7 @@ def _ensure_projects_csv_schema() -> None:
     spreadsheet.worksheet('projects')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_projects_csv() -> list[dict]:
     """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects)."""
     if spreadsheet is None:
@@ -1350,7 +1350,7 @@ def _ensure_quotes_csv_schema() -> None:
     spreadsheet.worksheet('quotes')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=15)
+@st.cache_data(ttl=60)
 def read_quotes_csv() -> list[dict]:
     """קריאת נתוני טופס הצעות מחיר מגוגל שיטס (גיליון quotes)."""
     if spreadsheet is None:
@@ -3559,18 +3559,6 @@ def show_tasks_page() -> None:
         else:
             df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
             df_projects = df_projects.fillna('')
-            # Force display - הצגת מה שיש ביד לפני בדיקת ריקות
-            st.write(f"🔍 שורות שנמצאו לפני סינון: {len(df_projects)}")
-            st.dataframe(
-                df_projects,
-                use_container_width=True,
-                column_config={
-                    "Dropbox_Link": st.column_config.LinkColumn(
-                        "תיקיית דרופבוקס",
-                        display_text="תיקיית דרופבוקס",
-                    ),
-                },
-            )
             if df_projects.empty:
                 st.info("אין פרויקטים להצגה.")
             else:
