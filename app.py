@@ -738,14 +738,16 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
         except dropbox.exceptions.ApiError:
             pass
         try:
-            result = dbx.sharing_create_shared_link_with_settings(folder_path)
-            return result.url
+            link_metadata = dbx.sharing_create_shared_link_with_settings(folder_path)
+            return link_metadata.url
         except dropbox.exceptions.ApiError as e:
             err = getattr(e, 'error', None)
             if err is not None and getattr(err, 'is_shared_link_already_exists', lambda: False)():
                 meta = getattr(err, 'get_shared_link_already_exists', lambda: None)()
-                if meta and getattr(meta, 'metadata', None):
-                    return meta.metadata.url
+                if meta and getattr(meta, 'is_metadata', lambda: False)():
+                    link_meta = meta.get_metadata()
+                    if link_meta:
+                        return link_meta.url
                 try:
                     links_result = dbx.sharing_list_shared_links(path=folder_path, direct_only=True)
                     if links_result.links:
