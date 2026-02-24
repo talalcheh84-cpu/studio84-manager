@@ -12,6 +12,10 @@ import platform
 from urllib.parse import quote
 
 import dropbox
+try:
+    from dropbox.common import PathRoot
+except ImportError:
+    PathRoot = None
 import streamlit as st
 from streamlit_calendar import calendar
 import holidays
@@ -737,6 +741,24 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
             return None
         dbx = dropbox.Dropbox(token)
 
+        # Dropbox Business - שורש ל-Team Space במקום Member Space
+        path_root = None
+        if PathRoot:
+            try:
+                ns_id = st.secrets.get("DROPBOX_NAMESPACE_ID")
+                if ns_id and str(ns_id).strip():
+                    path_root = PathRoot.namespace_id(str(ns_id).strip())
+                else:
+                    acc = dbx.users_get_current_account()
+                    if acc and getattr(acc, "root_info", None):
+                        root_ns = getattr(acc.root_info, "root_namespace_id", None)
+                        if root_ns:
+                            path_root = PathRoot.root(root_ns)
+            except Exception:
+                pass
+        if path_root:
+            dbx = dbx.with_path_root(path_root)
+
         # יצירת תיקיות הורה אם הנתיב מקונן
         parts = [p for p in main_folder.split("/") if p]
         for i in range(1, len(parts)):
@@ -787,13 +809,20 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
         main_link = _get_shared_link(main_folder)
         deliverables_link = _get_shared_link(deliverables_folder)
 
-        # File Request לחומרים נכנסים
+        # File Request לחומרים נכנסים - try-except נפרד כדי שלא יכשיל את יתר הלינקים
+        upload_link = ""
         try:
+            dest = materials_folder
+            if not dest.startswith("/"):
+                dest = "/" + dest
             fr = dbx.file_requests_create(
                 title=f"Upload Materials - {clean_name}",
-                destination=materials_folder,
+                destination=dest,
             )
-            upload_link = fr.url if fr and hasattr(fr, "url") else ""
+            if fr is not None:
+                url_val = getattr(fr, "url", None)
+                if url_val and isinstance(url_val, str) and url_val.strip() and url_val.strip() != "0":
+                    upload_link = url_val.strip()
         except Exception:
             upload_link = ""
 
@@ -823,6 +852,22 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
         if not token:
             return ""
         dbx = dropbox.Dropbox(token)
+        path_root = None
+        if PathRoot:
+            try:
+                ns_id = st.secrets.get("DROPBOX_NAMESPACE_ID")
+                if ns_id and str(ns_id).strip():
+                    path_root = PathRoot.namespace_id(str(ns_id).strip())
+                else:
+                    acc = dbx.users_get_current_account()
+                    if acc and getattr(acc, "root_info", None):
+                        root_ns = getattr(acc.root_info, "root_namespace_id", None)
+                        if root_ns:
+                            path_root = PathRoot.root(root_ns)
+            except Exception:
+                pass
+        if path_root:
+            dbx = dbx.with_path_root(path_root)
         # יצירת תיקיות הורה אם הנתיב מקונן (למשל /Studio84/StudioManager/Projects)
         parts = [p for p in folder_path.split("/") if p]
         for i in range(1, len(parts)):
@@ -2893,8 +2938,20 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link,
                             )
                             st.cache_data.clear()
-                            st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
-                            st.rerun()
+                            st.session_state["kickoff_success_project"] = f"{client}|{project}"
+                            st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
+                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
+                            if main_link or upload_link or deliverables_link:
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    if main_link:
+                                        st.link_button("📂 תיקייה ראשית", main_link)
+                                with col2:
+                                    if upload_link:
+                                        st.link_button("☁️ העלאת חומרים", upload_link)
+                                with col3:
+                                    if deliverables_link:
+                                        st.link_button("📤 תוצרים", deliverables_link)
                         else:
                             team_str = ", ".join(assigned_team) if assigned_team else ""
                             contacts_str = ", ".join(project_contacts) if project_contacts else ""
@@ -2934,20 +2991,41 @@ def show_quotes_management_page() -> None:
                                     project_template=project_template,
                                     task_deadline=task_deadline,
                                 )
-                            st.success("הפרויקט הוזנק בהצלחה! התיקיות נוצרו, ושרשרת המשימות נשלחה לצוות.")
-                            st.rerun()
+                            st.session_state["kickoff_success_project"] = f"{client}|{project}"
+                            st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
+                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
+                            if main_link or upload_link or deliverables_link:
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    if main_link:
+                                        st.link_button("📂 תיקייה ראשית", main_link)
+                                with col2:
+                                    if upload_link:
+                                        st.link_button("☁️ העלאת חומרים", upload_link)
+                                with col3:
+                                    if deliverables_link:
+                                        st.link_button("📤 תוצרים", deliverables_link)
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str = ", ".join(assigned_team) if assigned_team else "צוות"
                     emails = [TEAM_EMAIL_BY_SHORT.get(name, "") for name in assigned_team]
                     to_str = ",".join(emails) if emails else ""
                     subject = f"פרויקט חדש: {project} - {client}"
+                    kickoff_project_key = f"{client}|{project}"
+                    stored_links = st.session_state.get("kickoff_success_links") if st.session_state.get("kickoff_success_project") == kickoff_project_key else None
+                    main_link_body = stored_links[0] if stored_links and len(stored_links) >= 1 else ""
+                    upload_link_body = stored_links[1] if stored_links and len(stored_links) >= 2 else ""
                     body = f"""היי {team_names_str},
 נכנס פרויקט חדש: {project}
 לקוח: {client}
 
-📂 שם התיקייה בדרופבוקס: Projects / {client} / {project}
-☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"""
+📂 שם התיקייה בדרופבוקס: Projects / {client} / {project}"""
+                    if main_link_body:
+                        body += f"\n📂 לינק לתיקייה הראשית: {main_link_body}"
+                    if upload_link_body:
+                        body += f"\n☁️ לינק להעלאת חומרים: {upload_link_body}"
+                    if not main_link_body and not upload_link_body:
+                        body += "\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
                     if project_template:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template)
                     body += "\n\nבהצלחה!"
@@ -2973,7 +3051,12 @@ def show_quotes_management_page() -> None:
                         )
 
                     # כפתור וואצאפ לערן
-                    wa_message = f"היי ערן, נכנס פרויקט חדש: {project} עבור {client}. הלינק לחומרים נשלח במייל."
+                    wa_links = ""
+                    if main_link_body:
+                        wa_links += f" תיקייה: {main_link_body}"
+                    if upload_link_body:
+                        wa_links += f" העלאה: {upload_link_body}"
+                    wa_message = f"היי ערן, נכנס פרויקט חדש: {project} עבור {client}.{wa_links if wa_links else ' הלינק לחומרים נשלח במייל.'}"
                     wa_link = f"https://wa.me/{WHATSAPP_ERAN}?text={quote(wa_message)}"
                     st.markdown(
                         f'<a href="{wa_link}" target="_blank" style="display:inline-block;padding:8px 16px;background:#25D366;color:white;text-decoration:none;border-radius:4px;">📱 וואצאפ לערן</a>',
@@ -3476,8 +3559,20 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link_fb,
                             )
                             st.cache_data.clear()
-                            st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
-                            st.rerun()
+                            st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
+                            st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
+                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
+                            if main_link_fb or upload_link_fb or deliverables_link_fb:
+                                col1_fb, col2_fb, col3_fb = st.columns(3)
+                                with col1_fb:
+                                    if main_link_fb:
+                                        st.link_button("📂 תיקייה ראשית", main_link_fb)
+                                with col2_fb:
+                                    if upload_link_fb:
+                                        st.link_button("☁️ העלאת חומרים", upload_link_fb)
+                                with col3_fb:
+                                    if deliverables_link_fb:
+                                        st.link_button("📤 תוצרים", deliverables_link_fb)
                         else:
                             team_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else ""
                             contacts_str_fb = ", ".join(project_contacts_fb) if project_contacts_fb else ""
@@ -3516,20 +3611,41 @@ def show_quotes_management_page() -> None:
                                     project_template=project_template_fb,
                                     task_deadline=task_deadline_fb,
                                 )
-                            st.success("הפרויקט הוזנק בהצלחה! התיקיות נוצרו, ושרשרת המשימות נשלחה לצוות.")
-                            st.rerun()
+                            st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
+                            st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
+                            st.success("הפרויקט והתיקיות הוקמו בהצלחה!")
+                            if main_link_fb or upload_link_fb or deliverables_link_fb:
+                                col1_fb, col2_fb, col3_fb = st.columns(3)
+                                with col1_fb:
+                                    if main_link_fb:
+                                        st.link_button("📂 תיקייה ראשית", main_link_fb)
+                                with col2_fb:
+                                    if upload_link_fb:
+                                        st.link_button("☁️ העלאת חומרים", upload_link_fb)
+                                with col3_fb:
+                                    if deliverables_link_fb:
+                                        st.link_button("📤 תוצרים", deliverables_link_fb)
 
                     # מייל לצוות - תוכן אוניברסלי (שם תיקייה + לינק דרופבוקס, בלי נתיבים מקומיים)
                     team_names_str_fb = ", ".join(assigned_team_fb) if assigned_team_fb else "צוות"
                     emails = [TEAM_EMAIL_BY_SHORT.get(name, "") for name in assigned_team_fb]
                     to_str = ",".join(emails) if emails else ""
                     subject = f"פרויקט חדש: {project_val} - {client_val}"
+                    kickoff_project_key_fb = f"{client_val}|{project_val}"
+                    stored_links_fb = st.session_state.get("kickoff_success_links") if st.session_state.get("kickoff_success_project") == kickoff_project_key_fb else None
+                    main_link_body_fb = stored_links_fb[0] if stored_links_fb and len(stored_links_fb) >= 1 else ""
+                    upload_link_body_fb = stored_links_fb[1] if stored_links_fb and len(stored_links_fb) >= 2 else ""
                     body = f"""היי {team_names_str_fb},
 נכנס פרויקט חדש: {project_val}
 לקוח: {client_val}
 
-📂 שם התיקייה בדרופבוקס: Projects / {client_val} / {project_val}
-☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"""
+📂 שם התיקייה בדרופבוקס: Projects / {client_val} / {project_val}"""
+                    if main_link_body_fb:
+                        body += f"\n📂 לינק לתיקייה הראשית: {main_link_body_fb}"
+                    if upload_link_body_fb:
+                        body += f"\n☁️ לינק להעלאת חומרים: {upload_link_body_fb}"
+                    if not main_link_body_fb and not upload_link_body_fb:
+                        body += "\n☁️ לינק ישיר לחומרים: (נוצר אוטומטית בעת הוספת הפרויקט)"
                     if project_template_fb:
                         body += "\n\n📋 שלבי עבודה שנבחרו:\n" + "\n".join(f"• {step}" for step in project_template_fb)
                     body += "\n\nבהצלחה!"
@@ -3555,7 +3671,12 @@ def show_quotes_management_page() -> None:
                         )
 
                     # כפתור וואצאפ לערן
-                    wa_message_fb = f"היי ערן, נכנס פרויקט חדש: {project_val} עבור {client_val}. הלינק לחומרים נשלח במייל."
+                    wa_links_fb = ""
+                    if main_link_body_fb:
+                        wa_links_fb += f" תיקייה: {main_link_body_fb}"
+                    if upload_link_body_fb:
+                        wa_links_fb += f" העלאה: {upload_link_body_fb}"
+                    wa_message_fb = f"היי ערן, נכנס פרויקט חדש: {project_val} עבור {client_val}.{wa_links_fb if wa_links_fb else ' הלינק לחומרים נשלח במייל.'}"
                     wa_link_fb = f"https://wa.me/{WHATSAPP_ERAN}?text={quote(wa_message_fb)}"
                     st.markdown(
                         f'<a href="{wa_link_fb}" target="_blank" style="display:inline-block;padding:8px 16px;background:#25D366;color:white;text-decoration:none;border-radius:4px;">📱 וואצאפ לערן</a>',
