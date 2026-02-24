@@ -3570,7 +3570,7 @@ def show_tasks_page() -> None:
                                     if link:
                                         all_rows = read_projects()
                                         for r in all_rows:
-                                            if (str(r.get("Client") or "").strip() == pclient and str(r.get("Project Name") or "").strip() == pname:
+                                            if (str(r.get("Client") or "").strip() == pclient and str(r.get("Project Name") or "").strip() == pname):
                                                 r["Dropbox_Link"] = link
                                                 break
                                         write_projects(all_rows)
