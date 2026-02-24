@@ -781,9 +781,9 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
 
     try:
         dbx = dropbox.Dropbox(
-            app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"],
             oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"],
+            app_key=st.secrets["DROPBOX_APP_KEY"],
+            app_secret=st.secrets["DROPBOX_APP_SECRET"]
         )
 
         # Dropbox Business - שורש ל-Team Space במקום Member Space
@@ -897,9 +897,9 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
         if not refresh_token or not str(refresh_token).strip():
             return ""
         dbx = dropbox.Dropbox(
+            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"],
             app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"],
-            oauth2_refresh_token=refresh_token,
+            app_secret=st.secrets["DROPBOX_APP_SECRET"]
         )
         path_root = None
         if PathRoot:
