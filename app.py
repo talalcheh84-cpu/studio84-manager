@@ -703,12 +703,19 @@ CONTACTS_COLUMNS = [
 CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבונות", "מפקח/אחר"]
 
 
-def create_dropbox_folder_and_link(project_name: str) -> str | None:
+def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = None) -> str | None:
     """
-    יוצר תיקייה בדרופבוקס בנתיב /{project_name} ומחזיר קישור שיתוף.
+    יוצר תיקייה בדרופבוקס ומחזיר קישור שיתוף.
+    אם folder_path מסופק - משתמש בו (למשל Projects/Client/Project).
+    אחרת יוצר בנתיב /{project_name}.
     מחזיר את ה-URL או None במקרה של שגיאה.
     """
-    if not (project_name or "").strip():
+    if folder_path:
+        safe_path = "/" + folder_path.strip().strip("/").replace("\\", "/")
+    elif (project_name or "").strip():
+        safe_name = re.sub(r'[/\\:*?"<>|]', '_', project_name.strip()) or "project"
+        safe_path = f"/{safe_name}"
+    else:
         st.error("שם הפרויקט ריק.")
         return None
     try:
@@ -717,8 +724,15 @@ def create_dropbox_folder_and_link(project_name: str) -> str | None:
             st.error("DROPBOX_ACCESS_TOKEN לא מוגדר ב-secrets.")
             return None
         dbx = dropbox.Dropbox(token)
-        safe_name = re.sub(r'[/\\:*?"<>|]', '_', project_name.strip()) or "project"
-        folder_path = f"/{safe_name}"
+        folder_path = safe_path
+        # יצירת תיקיות הורה אם הנתיב מקונן (למשל /Projects/Client/Project)
+        parts = [p for p in folder_path.split("/") if p]
+        for i in range(1, len(parts)):
+            parent = "/" + "/".join(parts[:i])
+            try:
+                dbx.files_create_folder_v2(parent)
+            except dropbox.exceptions.ApiError:
+                pass  # תיקייה כבר קיימת
         try:
             dbx.files_create_folder_v2(folder_path)
         except dropbox.exceptions.ApiError:
@@ -1068,6 +1082,7 @@ def append_project_record(
     start_date_str: str,
     dropbox_path: str,
     budget_amount: str | float = "",
+    dropbox_link: str = "",
 ) -> None:
     """Append a new project row to projects (Google Sheets)."""
     _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
@@ -1092,7 +1107,7 @@ def append_project_record(
         "Status": clean_status,
         "Start Date": start_date_str,
         "Dropbox Path": (dropbox_path or "").strip(),
-        "Dropbox_Link": "",
+        "Dropbox_Link": (dropbox_link or "").strip(),
         'היקף כספי (₪)': amt_str,
     }
 
@@ -2751,6 +2766,12 @@ def show_quotes_management_page() -> None:
                             today_str = date.today().strftime("%d/%m/%Y")
                             dropbox_path = f"Projects/{safe_client}/{safe_project}"
                             manager_default = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
+                            generated_dropbox_link = ""
+                            try:
+                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
+                                    generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                            except Exception as e:
+                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
                             append_project_record(
                                 client=client,
                                 project_name=project,
@@ -2760,6 +2781,7 @@ def show_quotes_management_page() -> None:
                                 start_date_str=today_str,
                                 dropbox_path=dropbox_path,
                                 budget_amount=budget_amt,
+                                dropbox_link=generated_dropbox_link,
                             )
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
                             st.rerun()
@@ -2769,11 +2791,17 @@ def show_quotes_management_page() -> None:
                             deadline_str = kickoff_deadline.strftime('%d/%m/%Y')
                             row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
                             budget_amt = _extract_total_from_quote_row(row_dict)
-                            append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
-                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             today_str = date.today().strftime("%d/%m/%Y")
                             dropbox_path = f"Projects/{safe_client}/{safe_project}"
                             manager_default = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
+                            generated_dropbox_link = ""
+                            try:
+                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
+                                    generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                            except Exception as e:
+                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
+                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
                                 client=client,
                                 project_name=project,
@@ -2783,6 +2811,7 @@ def show_quotes_management_page() -> None:
                                 start_date_str=today_str,
                                 dropbox_path=dropbox_path,
                                 budget_amount=budget_amt,
+                                dropbox_link=generated_dropbox_link,
                             )
                             project_display = f"{client} | {project}"
                             if assigned_team and project_template:
@@ -2883,6 +2912,12 @@ def show_quotes_management_page() -> None:
                                 budget_amt = _extract_total_from_quote_row(q)
                                 break
 
+                        generated_dropbox_link = ""
+                        try:
+                            with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
+                                generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                        except Exception as e:
+                            st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
                         append_project_record(
                             client=client,
                             project_name=project,
@@ -2892,6 +2927,7 @@ def show_quotes_management_page() -> None:
                             start_date_str=today_str,
                             dropbox_path=dropbox_path,
                             budget_amount=budget_amt,
+                            dropbox_link=generated_dropbox_link,
                         )
 
                         # עדכון סטטוס ההצעה ל-Approved בגיליון quotes
@@ -3314,6 +3350,12 @@ def show_quotes_management_page() -> None:
                             today_str_fb = date.today().strftime("%d/%m/%Y")
                             dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
                             manager_default_fb = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
+                            generated_dropbox_link_fb = ""
+                            try:
+                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
+                                    generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
+                            except Exception as e:
+                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
                             append_project_record(
                                 client=client_val,
                                 project_name=project_val,
@@ -3323,6 +3365,7 @@ def show_quotes_management_page() -> None:
                                 start_date_str=today_str_fb,
                                 dropbox_path=dropbox_path_fb,
                                 budget_amount=budget_amt_fb,
+                                dropbox_link=generated_dropbox_link_fb,
                             )
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
                             st.rerun()
@@ -3331,11 +3374,17 @@ def show_quotes_management_page() -> None:
                             contacts_str_fb = ", ".join(project_contacts_fb) if project_contacts_fb else ""
                             deadline_str_fb = kickoff_deadline_fb.strftime('%d/%m/%Y')
                             budget_amt_fb = _extract_total_from_quote_row(r)
-                            append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
-                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             today_str_fb = date.today().strftime("%d/%m/%Y")
                             dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
                             manager_default_fb = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
+                            generated_dropbox_link_fb = ""
+                            try:
+                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
+                                    generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
+                            except Exception as e:
+                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
+                            # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
                                 client=client_val,
                                 project_name=project_val,
@@ -3345,6 +3394,7 @@ def show_quotes_management_page() -> None:
                                 start_date_str=today_str_fb,
                                 dropbox_path=dropbox_path_fb,
                                 budget_amount=budget_amt_fb,
+                                dropbox_link=generated_dropbox_link_fb,
                             )
                             project_display_fb = f"{client_val} | {project_val}"
                             if assigned_team_fb and project_template_fb:
