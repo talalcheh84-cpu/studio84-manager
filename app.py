@@ -705,29 +705,33 @@ CONTACTS_COLUMNS = [
 CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבונות", "מפקח/אחר"]
 
 
+DROPBOX_BASE_FOLDER = "/Studio84/StudioManager/Projects"
+
+
 def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = None) -> str | None:
     """
     יוצר תיקייה בדרופבוקס ומחזיר קישור שיתוף.
-    אם folder_path מסופק - משתמש בו (למשל Projects/Client/Project).
-    אחרת יוצר בנתיב /{project_name}.
+    כל התיקיות נוצרות בתיקייה המשותפת של הצוות (Studio84/StudioManager/Projects).
     מחזיר את ה-URL או None במקרה של שגיאה.
     """
-    if folder_path:
-        safe_path = "/" + folder_path.strip().strip("/").replace("\\", "/")
-    elif (project_name or "").strip():
-        safe_name = re.sub(r'[/\\:*?"<>|]', '_', project_name.strip()) or "project"
-        safe_path = f"/{safe_name}"
-    else:
+    if not (project_name or "").strip():
         st.error("שם הפרויקט ריק.")
         return None
+    clean_project_name = (
+        project_name.strip()
+        .replace(" ", "_")
+        .replace("/", "-")
+        .replace("\\", "-")
+    )
+    clean_project_name = re.sub(r'[/\\:*?"<>|]', "_", clean_project_name) or "project"
+    folder_path = f"{DROPBOX_BASE_FOLDER}/{clean_project_name}"
     try:
         token = st.secrets.get("DROPBOX_ACCESS_TOKEN")
         if not token:
             st.error("DROPBOX_ACCESS_TOKEN לא מוגדר ב-secrets.")
             return None
         dbx = dropbox.Dropbox(token)
-        folder_path = safe_path
-        # יצירת תיקיות הורה אם הנתיב מקונן (למשל /Projects/Client/Project)
+        # יצירת תיקיות הורה אם הנתיב מקונן (למשל /Studio84/StudioManager/Projects)
         parts = [p for p in folder_path.split("/") if p]
         for i in range(1, len(parts)):
             parent = "/" + "/".join(parts[:i])
