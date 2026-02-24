@@ -712,11 +712,10 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
     """
     יוצר תיקייה בדרופבוקס ומחזיר קישור שיתוף.
     כל התיקיות נוצרות בתיקייה המשותפת של הצוות (Studio84/StudioManager/Projects).
-    מחזיר את ה-URL או None במקרה של שגיאה.
+    מחזיר את ה-URL או None/מחרוזת ריקה במקרה של שגיאה. לא קורא ל-st.error כדי לא לעצור את הסקריפט.
     """
     if not (project_name or "").strip():
-        st.error("שם הפרויקט ריק.")
-        return None
+        return ""
     clean_project_name = (
         project_name.strip()
         .replace(" ", "_")
@@ -728,8 +727,7 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
     try:
         token = st.secrets.get("DROPBOX_ACCESS_TOKEN")
         if not token:
-            st.error("DROPBOX_ACCESS_TOKEN לא מוגדר ב-secrets.")
-            return None
+            return ""
         dbx = dropbox.Dropbox(token)
         # יצירת תיקיות הורה אם הנתיב מקונן (למשל /Studio84/StudioManager/Projects)
         parts = [p for p in folder_path.split("/") if p]
@@ -761,9 +759,8 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
                 except Exception:
                     pass
             raise
-    except Exception as e:
-        st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
-        return None
+    except Exception:
+        raise
 
 
 def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
@@ -2782,8 +2779,8 @@ def show_quotes_management_page() -> None:
                             try:
                                 with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
                                     generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
-                            except Exception as e:
-                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            except BaseException as e:
+                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_project_record(
                                 client=client,
                                 project_name=project,
@@ -2811,8 +2808,8 @@ def show_quotes_management_page() -> None:
                             try:
                                 with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
                                     generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
-                            except Exception as e:
-                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            except BaseException as e:
+                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
@@ -2930,8 +2927,8 @@ def show_quotes_management_page() -> None:
                         try:
                             with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
                                 generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
-                        except Exception as e:
-                            st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                        except BaseException as e:
+                            st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                         append_project_record(
                             client=client,
                             project_name=project,
@@ -3362,8 +3359,8 @@ def show_quotes_management_page() -> None:
                             try:
                                 with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
                                     generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
-                            except Exception as e:
-                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            except BaseException as e:
+                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_project_record(
                                 client=client_val,
                                 project_name=project_val,
@@ -3390,8 +3387,8 @@ def show_quotes_management_page() -> None:
                             try:
                                 with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
                                     generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
-                            except Exception as e:
-                                st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
+                            except BaseException as e:
+                                st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
