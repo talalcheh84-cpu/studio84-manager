@@ -2483,6 +2483,42 @@ def show_quote_page() -> None:
             # Save Word to disk (גיבוי לעריכה)
             doc.save(str(output_path))
 
+            # העלאת קובץ ה-Word לדרופבוקס (בענן אין סנכרון אוטומטי)
+            try:
+                dbx = dropbox.Dropbox(
+                    app_key=st.secrets["DROPBOX_APP_KEY"],
+                    app_secret=st.secrets["DROPBOX_APP_SECRET"],
+                    oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
+                )
+                if PathRoot:
+                    try:
+                        ns_id = st.secrets.get("DROPBOX_NAMESPACE_ID")
+                        if ns_id and str(ns_id).strip():
+                            dbx = dbx.with_path_root(PathRoot.namespace_id(str(ns_id).strip()))
+                        else:
+                            acc = dbx.users_get_current_account()
+                            if acc and getattr(acc, "root_info", None):
+                                root_ns = getattr(acc.root_info, "root_namespace_id", None)
+                                if root_ns:
+                                    dbx = dbx.with_path_root(PathRoot.root(root_ns))
+                    except Exception:
+                        pass
+                status_name = _status_to_folder_name(DEFAULT_QUOTE_STATUS)
+                dbx_quotes_path = f"/Studio84/StudioManager/Quotes/{year}/{month:02d}/{status_name}/{filename_docx}"
+                # יצירת תיקיות הורה במידת הצורך
+                path_parts = [p for p in dbx_quotes_path.split("/") if p][:-1]  # ללא שם הקובץ
+                for i in range(1, len(path_parts) + 1):
+                    parent = "/" + "/".join(path_parts[:i])
+                    try:
+                        dbx.files_create_folder_v2(parent)
+                    except dropbox.exceptions.ApiError:
+                        pass
+                with open(str(output_path), "rb") as f:
+                    dbx.files_upload(f.read(), dbx_quotes_path, mode=dropbox.files.WriteMode.overwrite)
+                st.success("📄 קובץ הצעת המחיר נוצר והועלה לדרופבוקס!")
+            except Exception as dbx_err:
+                st.warning(f"הקובץ נוצר בהצלחה, אך העלאה לדרופבוקס נכשלה: {dbx_err}")
+
             # המרת Word ל-PDF (LibreOffice)
             pdf_path = quotes_dir / filename_pdf
             try:
@@ -2580,7 +2616,7 @@ def show_quote_page() -> None:
             st.session_state['current_quote_version'] = quote_version or ""
             st.session_state['current_client_name'] = client_name or ""
         except Exception as e:
-            st.error(f"שגיאה ביצירת קובץ ה-Word: {e}")
+            st.error(f'שגיאה מפורטת: {str(e)}')
 
     # הצגת התוצאה מחוץ ל-if - נשארת גם אחרי לחיצה על כפתורים
     if 'current_pdf_path' in st.session_state:
