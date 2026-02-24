@@ -28,12 +28,14 @@ def init_connection():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+_sheets_init_error = None
 try:
     client = init_connection()
     SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
     spreadsheet = client.open_by_key(SHEET_ID)
 except Exception as e:
     spreadsheet = None
+    _sheets_init_error = e
     st.error(f"שגיאה בהתחברות לגוגל שיטס: {e}")
 
 # נתיב LibreOffice להמרת DOCX ל-PDF (חלופה ל-Word)
@@ -910,7 +912,8 @@ _LEGACY_PROJECT_STATUS_MAP = {
 def read_projects() -> list[dict]:
     """קריאת פרויקטים מגיליון projects בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
-        st.error("שגיאת קריאה: אין חיבור לגוגל שיטס.")
+        err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
+        st.error(f"שגיאת קריאה: {err_msg}")
         return []
     _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
     try:
@@ -933,7 +936,8 @@ def read_projects() -> list[dict]:
 def write_projects(rows: list[dict]) -> None:
     """שמירת פרויקטים לגיליון projects בגוגל שיטס."""
     if spreadsheet is None:
-        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
+        st.error(f"שגיאת שמירה: {err_msg}")
         return
     _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
     try:
@@ -968,7 +972,8 @@ def read_tasks() -> list[dict]:
 def write_tasks(rows: list[dict]) -> None:
     """שמירת משימות לגיליון tasks בגוגל שיטס."""
     if spreadsheet is None:
-        st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
+        st.error(f"שגיאת שמירה: {err_msg}")
         return
     _ensure_sheet('tasks', TASKS_LOG_COLUMNS)
     try:
@@ -4739,16 +4744,22 @@ def main() -> None:
                             else:
                                 # כאן שמור את קוד יצירת התיקייה הקיים (st.button של "צור תיקיית פרויקט בדרופבוקס" וכו')
                                 if project_display and st.button('צור תיקיית פרויקט בדרופבוקס', key=f'dropbox_create_{idx}'):
-                                    link = create_dropbox_folder_and_link(project_name)
-                                    if link:
-                                        all_rows = read_projects()
-                                        for r in all_rows:
-                                            if (str(r.get("Client") or "").strip() == client and
-                                                    str(r.get("Project Name") or "").strip() == project_name):
-                                                r["Dropbox_Link"] = link
-                                                break
-                                        write_projects(all_rows)
-                                        st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
+                                    safe_client = sanitize_filename_part(client)
+                                    safe_project = sanitize_filename_part(project_name)
+                                    dropbox_path = f"Projects/{safe_client}/{safe_project}"
+                                    try:
+                                        link = create_dropbox_folder_and_link(project_name, folder_path=dropbox_path)
+                                        if link:
+                                            all_rows = read_projects()
+                                            for r in all_rows:
+                                                if (str(r.get("Client") or "").strip() == client and
+                                                        str(r.get("Project Name") or "").strip() == project_name):
+                                                    r["Dropbox_Link"] = link
+                                                    break
+                                            write_projects(all_rows)
+                                            st.success("נוצרה תיקיית דרופבוקס והקישור נשמר!")
+                                    except Exception as e:
+                                        st.error(f"שגיאה ביצירת תיקיית דרופבוקס: {e}")
                 if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
                     st.session_state.monitor_filter = None
                     st.session_state.monitor_title = ""
