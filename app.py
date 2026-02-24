@@ -538,8 +538,9 @@ PROJECTS_DB_COLUMNS = [
     "Team",
     "Status",
     "Start Date",
-    "Dropbox Path",
-    "Dropbox_Link",
+    "Dropbox_Main",
+    "Dropbox_Upload",
+    "Dropbox_Deliverables",
     'היקף כספי (₪)',
 ]
 ALLOWED_PROJECT_STATUSES = [
@@ -706,6 +707,99 @@ CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבו�
 
 
 DROPBOX_BASE_FOLDER = "/Studio84/StudioManager/Projects"
+
+
+def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] | None:
+    """
+    יוצר מבנה תיקיות בדרופבוקס לפרויקט: תיקייה ראשית + 2 תת-תיקיות.
+    מחזיר (main_link, upload_link, deliverables_link) או None במקרה של שגיאה.
+    - main_link: קישור שיתוף לתיקייה הראשית
+    - upload_link: קישור File Request לתת-תיקיית חומרים נכנסים
+    - deliverables_link: קישור שיתוף לתת-תיקיית תוצרים
+    """
+    if not (project_name or "").strip():
+        return None
+    clean_name = (
+        project_name.strip()
+        .replace(" ", "_")
+        .replace("/", "-")
+        .replace("\\", "-")
+    )
+    clean_name = re.sub(r'[/\\:*?"<>|]', "_", clean_name) or "project"
+    base_path = "/Studio84/StudioManager/Projects"
+    main_folder = f"{base_path}/{clean_name}"
+    materials_folder = f"{main_folder}/01_Client_Materials"
+    deliverables_folder = f"{main_folder}/02_Studio_Deliverables"
+
+    try:
+        token = st.secrets.get("DROPBOX_ACCESS_TOKEN")
+        if not token:
+            return None
+        dbx = dropbox.Dropbox(token)
+
+        # יצירת תיקיות הורה אם הנתיב מקונן
+        parts = [p for p in main_folder.split("/") if p]
+        for i in range(1, len(parts)):
+            parent = "/" + "/".join(parts[:i])
+            try:
+                dbx.files_create_folder_v2(parent)
+            except dropbox.exceptions.ApiError:
+                pass
+
+        # תיקייה ראשית
+        try:
+            dbx.files_create_folder_v2(main_folder)
+        except dropbox.exceptions.ApiError:
+            pass
+
+        # תת-תיקייה לחומרים נכנסים
+        try:
+            dbx.files_create_folder_v2(materials_folder)
+        except dropbox.exceptions.ApiError:
+            pass
+
+        # תת-תיקייה לתוצרים
+        try:
+            dbx.files_create_folder_v2(deliverables_folder)
+        except dropbox.exceptions.ApiError:
+            pass
+
+        def _get_shared_link(path: str) -> str:
+            try:
+                link_metadata = dbx.sharing_create_shared_link_with_settings(path)
+                return link_metadata.url
+            except dropbox.exceptions.ApiError as e:
+                err = getattr(e, "error", None)
+                if err is not None and getattr(err, "is_shared_link_already_exists", lambda: False)():
+                    meta = getattr(err, "get_shared_link_already_exists", lambda: None)()
+                    if meta and getattr(meta, "is_metadata", lambda: False)():
+                        link_meta = meta.get_metadata()
+                        if link_meta:
+                            return link_meta.url
+                    try:
+                        links_result = dbx.sharing_list_shared_links(path=path, direct_only=True)
+                        if links_result.links:
+                            return links_result.links[0].url
+                    except Exception:
+                        pass
+                raise
+
+        main_link = _get_shared_link(main_folder)
+        deliverables_link = _get_shared_link(deliverables_folder)
+
+        # File Request לחומרים נכנסים
+        try:
+            fr = dbx.file_requests_create(
+                title=f"Upload Materials - {clean_name}",
+                destination=materials_folder,
+            )
+            upload_link = fr.url if fr and hasattr(fr, "url") else ""
+        except Exception:
+            upload_link = ""
+
+        return (main_link, upload_link, deliverables_link)
+    except Exception:
+        raise
 
 
 def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = None) -> str | None:
@@ -1084,6 +1178,13 @@ def next_project_id(existing_rows: list[dict]) -> int:
     return max_id + 1
 
 
+def _safe_link(val: str) -> str:
+    """Safe link string: never save 0, use empty string if missing or invalid."""
+    if not val or not str(val).strip() or str(val).strip() == "0":
+        return ""
+    return str(val).strip()
+
+
 def append_project_record(
     client: str,
     project_name: str,
@@ -1091,9 +1192,10 @@ def append_project_record(
     team_members: list[str],
     status: str,
     start_date_str: str,
-    dropbox_path: str,
     budget_amount: str | float = "",
-    dropbox_link: str = "",
+    dropbox_main: str = "",
+    dropbox_upload: str = "",
+    dropbox_deliverables: str = "",
 ) -> None:
     """Append a new project row to projects (Google Sheets)."""
     _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
@@ -1109,11 +1211,6 @@ def append_project_record(
         except (TypeError, ValueError):
             amt_str = ""
 
-    # Dropbox_Link: never save 0 - use empty string if missing or invalid
-    dropbox_link_safe = ""
-    if dropbox_link and str(dropbox_link).strip() and str(dropbox_link).strip() != "0":
-        dropbox_link_safe = str(dropbox_link).strip()
-
     row = {
         "Project ID": str(project_id),
         "Client": (client or "").strip(),
@@ -1122,8 +1219,9 @@ def append_project_record(
         "Team": ", ".join(team_members or []),
         "Status": clean_status,
         "Start Date": start_date_str,
-        "Dropbox Path": (dropbox_path or "").strip(),
-        "Dropbox_Link": dropbox_link_safe,
+        "Dropbox_Main": _safe_link(dropbox_main),
+        "Dropbox_Upload": _safe_link(dropbox_upload),
+        "Dropbox_Deliverables": _safe_link(dropbox_deliverables),
         'היקף כספי (₪)': amt_str,
     }
 
@@ -2773,12 +2871,13 @@ def show_quotes_management_page() -> None:
                             row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
                             budget_amt = _extract_total_from_quote_row(row_dict)
                             today_str = date.today().strftime("%d/%m/%Y")
-                            dropbox_path = f"Projects/{safe_client}/{safe_project}"
                             manager_default = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
-                            generated_dropbox_link = ""
+                            main_link, upload_link, deliverables_link = "", "", ""
                             try:
-                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
-                                    generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                                with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
+                                    result = create_studio_dropbox_structure(project)
+                                    if result:
+                                        main_link, upload_link, deliverables_link = result
                             except BaseException as e:
                                 st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_project_record(
@@ -2788,9 +2887,10 @@ def show_quotes_management_page() -> None:
                                 team_members=assigned_team or [],
                                 status="בעבודה",
                                 start_date_str=today_str,
-                                dropbox_path=dropbox_path,
                                 budget_amount=budget_amt,
-                                dropbox_link=generated_dropbox_link,
+                                dropbox_main=main_link,
+                                dropbox_upload=upload_link,
+                                dropbox_deliverables=deliverables_link,
                             )
                             st.cache_data.clear()
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
@@ -2802,12 +2902,13 @@ def show_quotes_management_page() -> None:
                             row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
                             budget_amt = _extract_total_from_quote_row(row_dict)
                             today_str = date.today().strftime("%d/%m/%Y")
-                            dropbox_path = f"Projects/{safe_client}/{safe_project}"
                             manager_default = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
-                            generated_dropbox_link = ""
+                            main_link, upload_link, deliverables_link = "", "", ""
                             try:
-                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
-                                    generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                                with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
+                                    result = create_studio_dropbox_structure(project)
+                                    if result:
+                                        main_link, upload_link, deliverables_link = result
                             except BaseException as e:
                                 st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
@@ -2819,9 +2920,10 @@ def show_quotes_management_page() -> None:
                                 team_members=assigned_team or [],
                                 status="בעבודה",
                                 start_date_str=today_str,
-                                dropbox_path=dropbox_path,
                                 budget_amount=budget_amt,
-                                dropbox_link=generated_dropbox_link,
+                                dropbox_main=main_link,
+                                dropbox_upload=upload_link,
+                                dropbox_deliverables=deliverables_link,
                             )
                             st.cache_data.clear()
                             project_display = f"{client} | {project}"
@@ -2909,10 +3011,6 @@ def show_quotes_management_page() -> None:
                         project_path = ensure_project_folders_for_approved_quote(client, project)
                         # נתיב Dropbox יישמר ויישלח במייל כנתיב יחסי, זהה אצל כל עובד:
                         # Projects/{Client}/{Project}
-                        safe_client = sanitize_filename_part(client)
-                        safe_project = sanitize_filename_part(project)
-                        dropbox_path = f"Projects/{safe_client}/{safe_project}"
-
                         budget_amt = 0.0
                         for q in read_quotes_log():
                             if (
@@ -2923,10 +3021,12 @@ def show_quotes_management_page() -> None:
                                 budget_amt = _extract_total_from_quote_row(q)
                                 break
 
-                        generated_dropbox_link = ""
+                        main_link_ap, upload_link_ap, deliverables_link_ap = "", "", ""
                         try:
-                            with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
-                                generated_dropbox_link = (create_dropbox_folder_and_link(project, folder_path=dropbox_path) or "")
+                            with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
+                                result_ap = create_studio_dropbox_structure(project)
+                                if result_ap:
+                                    main_link_ap, upload_link_ap, deliverables_link_ap = result_ap
                         except BaseException as e:
                             st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                         append_project_record(
@@ -2936,9 +3036,10 @@ def show_quotes_management_page() -> None:
                             team_members=team,
                             status=DEFAULT_PROJECT_STATUS,
                             start_date_str=today_str,
-                            dropbox_path=dropbox_path,
                             budget_amount=budget_amt,
-                            dropbox_link=generated_dropbox_link,
+                            dropbox_main=main_link_ap,
+                            dropbox_upload=upload_link_ap,
+                            dropbox_deliverables=deliverables_link_ap,
                         )
                         st.cache_data.clear()
 
@@ -3353,12 +3454,13 @@ def show_quotes_management_page() -> None:
                             # הפרויקט ב-projects.csv בלבד – הוסף ל-projects כדי שיופיע במוניטור וב-Task Board
                             budget_amt_fb = _extract_total_from_quote_row(r)
                             today_str_fb = date.today().strftime("%d/%m/%Y")
-                            dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
                             manager_default_fb = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
-                            generated_dropbox_link_fb = ""
+                            main_link_fb, upload_link_fb, deliverables_link_fb = "", "", ""
                             try:
-                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
-                                    generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
+                                with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
+                                    result_fb = create_studio_dropbox_structure(project_val)
+                                    if result_fb:
+                                        main_link_fb, upload_link_fb, deliverables_link_fb = result_fb
                             except BaseException as e:
                                 st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_project_record(
@@ -3368,9 +3470,10 @@ def show_quotes_management_page() -> None:
                                 team_members=assigned_team_fb or [],
                                 status="בעבודה",
                                 start_date_str=today_str_fb,
-                                dropbox_path=dropbox_path_fb,
                                 budget_amount=budget_amt_fb,
-                                dropbox_link=generated_dropbox_link_fb,
+                                dropbox_main=main_link_fb,
+                                dropbox_upload=upload_link_fb,
+                                dropbox_deliverables=deliverables_link_fb,
                             )
                             st.cache_data.clear()
                             st.success("הפרויקט נוסף לרשימת הפרויקטים הפעילים ויופיע במוניטור וברשימת המשימות.")
@@ -3381,12 +3484,13 @@ def show_quotes_management_page() -> None:
                             deadline_str_fb = kickoff_deadline_fb.strftime('%d/%m/%Y')
                             budget_amt_fb = _extract_total_from_quote_row(r)
                             today_str_fb = date.today().strftime("%d/%m/%Y")
-                            dropbox_path_fb = f"Projects/{safe_client_fb}/{safe_project_fb}"
                             manager_default_fb = PROJECT_MANAGERS[0] if PROJECT_MANAGERS else ""
-                            generated_dropbox_link_fb = ""
+                            main_link_fb, upload_link_fb, deliverables_link_fb = "", "", ""
                             try:
-                                with st.spinner('מייצר תיקייה ב-Dropbox ופותח פרויקט...'):
-                                    generated_dropbox_link_fb = (create_dropbox_folder_and_link(project_val, folder_path=dropbox_path_fb) or "")
+                                with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
+                                    result_fb = create_studio_dropbox_structure(project_val)
+                                    if result_fb:
+                                        main_link_fb, upload_link_fb, deliverables_link_fb = result_fb
                             except BaseException as e:
                                 st.error(f"⚠️ שגיאה ביצירת תיקיית דרופבוקס (הפרויקט יוקם ללא קישור): {e}")
                             append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
@@ -3398,9 +3502,10 @@ def show_quotes_management_page() -> None:
                                 team_members=assigned_team_fb or [],
                                 status="בעבודה",
                                 start_date_str=today_str_fb,
-                                dropbox_path=dropbox_path_fb,
                                 budget_amount=budget_amt_fb,
-                                dropbox_link=generated_dropbox_link_fb,
+                                dropbox_main=main_link_fb,
+                                dropbox_upload=upload_link_fb,
+                                dropbox_deliverables=deliverables_link_fb,
                             )
                             st.cache_data.clear()
                             project_display_fb = f"{client_val} | {project_val}"
@@ -3587,9 +3692,17 @@ def show_tasks_page() -> None:
                                 format="₪%d",
                                 default=0,
                             ),
-                            "Dropbox_Link": st.column_config.LinkColumn(
-                                "תיקיית דרופבוקס",
-                                display_text="תיקיית דרופבוקס",
+                            "Dropbox_Main": st.column_config.LinkColumn(
+                                "דרופבוקס - ראשי",
+                                display_text="תיקייה ראשית",
+                            ),
+                            "Dropbox_Upload": st.column_config.LinkColumn(
+                                "דרופבוקס - העלאה",
+                                display_text="בקשת קבצים",
+                            ),
+                            "Dropbox_Deliverables": st.column_config.LinkColumn(
+                                "דרופבוקס - תוצרים",
+                                display_text="תוצרים",
                             ),
                         },
                         key="projects_editor",
@@ -4695,9 +4808,17 @@ def main() -> None:
                             use_container_width=True,
                             key="drilldown_editor",
                             column_config={
-                                "Dropbox_Link": st.column_config.LinkColumn(
-                                    "תיקיית דרופבוקס",
-                                    display_text="תיקיית דרופבוקס",
+                                "Dropbox_Main": st.column_config.LinkColumn(
+                                    "דרופבוקס - ראשי",
+                                    display_text="תיקייה ראשית",
+                                ),
+                                "Dropbox_Upload": st.column_config.LinkColumn(
+                                    "דרופבוקס - העלאה",
+                                    display_text="בקשת קבצים",
+                                ),
+                                "Dropbox_Deliverables": st.column_config.LinkColumn(
+                                    "דרופבוקס - תוצרים",
+                                    display_text="תוצרים",
                                 ),
                             },
                         )
