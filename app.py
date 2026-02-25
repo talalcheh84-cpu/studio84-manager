@@ -1501,6 +1501,7 @@ def _quote_csv_to_log_row(r: dict) -> dict:
     }
 
 
+@st.cache_data(ttl=60)
 def read_quotes_log() -> list[dict]:
     """קריאת הצעות מגיליון quotes בגוגל שיטס - באותה צורה בטוחה כמו projects (fillna, ניקוי רווחים)."""
     rows = read_quotes_csv()
@@ -1612,6 +1613,7 @@ def write_quotes_csv(rows: list[dict]) -> None:
         st.warning(f"שגיאה בשמירת quotes: {e}")
 
 
+@st.cache_data(ttl=60)
 def get_quote_from_csv(client: str, project: str, version: str) -> dict | None:
     """Get full quote row from quotes (Google Sheets) by (Client, Project, Version)."""
     key = _quote_key(client, project, version)
