@@ -2485,7 +2485,18 @@ def show_quote_page() -> None:
             # Save Word to disk (גיבוי לעריכה)
             doc.save(str(output_path))
 
-            # העלאת קובץ ה-Word לדרופבוקס (בענן אין סנכרון אוטומטי)
+            # המרת Word ל-PDF באמצעות LibreOffice (לענן לינוקס)
+            pdf_path = output_path.with_suffix(".pdf")
+            try:
+                subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to", "pdf", str(output_path)],
+                    capture_output=True,
+                    timeout=60,
+                )
+            except Exception as pdf_err:
+                st.warning(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
+
+            # העלאת קובצי ה-Word וה-PDF לדרופבוקס (בענן אין סנכרון אוטומטי)
             try:
                 dbx = dropbox.Dropbox(
                     app_key=st.secrets["DROPBOX_APP_KEY"],
@@ -2506,9 +2517,10 @@ def show_quote_page() -> None:
                     except Exception:
                         pass
                 status_name = _status_to_folder_name(DEFAULT_QUOTE_STATUS)
-                dbx_quotes_path = f"/Studio84/StudioManager/Quotes/{year}/{month:02d}/{status_name}/{filename_docx}"
+                dbx_quotes_path_docx = f"/Studio84/StudioManager/Quotes/{year}/{month:02d}/{status_name}/{filename_docx}"
+                dbx_quotes_path_pdf = f"/Studio84/StudioManager/Quotes/{year}/{month:02d}/{status_name}/{filename_pdf}"
                 # יצירת תיקיות הורה במידת הצורך
-                path_parts = [p for p in dbx_quotes_path.split("/") if p][:-1]  # ללא שם הקובץ
+                path_parts = [p for p in dbx_quotes_path_docx.split("/") if p][:-1]  # ללא שם הקובץ
                 for i in range(1, len(path_parts) + 1):
                     parent = "/" + "/".join(path_parts[:i])
                     try:
@@ -2516,17 +2528,13 @@ def show_quote_page() -> None:
                     except dropbox.exceptions.ApiError:
                         pass
                 with open(str(output_path), "rb") as f:
-                    dbx.files_upload(f.read(), dbx_quotes_path, mode=dropbox.files.WriteMode.overwrite)
-                st.success("📄 קובץ הצעת המחיר נוצר והועלה לדרופבוקס!")
+                    dbx.files_upload(f.read(), dbx_quotes_path_docx, mode=dropbox.files.WriteMode.overwrite)
+                if pdf_path.exists():
+                    with open(str(pdf_path), "rb") as f:
+                        dbx.files_upload(f.read(), dbx_quotes_path_pdf, mode=dropbox.files.WriteMode.overwrite)
+                st.success("✅ קובצי ה-Word וה-PDF נוצרו והועלו לדרופבוקס בהצלחה!")
             except Exception as dbx_err:
                 st.warning(f"הקובץ נוצר בהצלחה, אך העלאה לדרופבוקס נכשלה: {dbx_err}")
-
-            # המרת Word ל-PDF (LibreOffice)
-            pdf_path = quotes_dir / filename_pdf
-            try:
-                convert_to_pdf(str(output_path), str(pdf_path))
-            except Exception as pdf_err:
-                st.warning(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
 
             # עדכון מספור אוטומטי ב-config.json (רק בהצעה חדשה)
             if not is_edit_mode:
