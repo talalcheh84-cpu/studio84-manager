@@ -2486,15 +2486,20 @@ def show_quote_page() -> None:
             doc.save(str(output_path))
 
             # המרת Word ל-PDF באמצעות LibreOffice (לענן לינוקס)
-            pdf_path = output_path.with_suffix(".pdf")
+            pdf_filename = str(output_path).replace(".docx", ".pdf")
+            pdf_path = Path(pdf_filename)
+            outdir = str(quotes_dir)
             try:
-                subprocess.run(
-                    ["libreoffice", "--headless", "--convert-to", "pdf", str(output_path)],
+                result = subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", outdir, str(output_path)],
                     capture_output=True,
+                    text=True,
                     timeout=60,
                 )
+                if not os.path.exists(pdf_filename):
+                    st.error(f"המרת PDF נכשלה. פלט: {result.stderr or ''} {result.stdout or ''}")
             except Exception as pdf_err:
-                st.warning(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
+                st.error(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
 
             # העלאת קובצי ה-Word וה-PDF לדרופבוקס (בענן אין סנכרון אוטומטי)
             try:
@@ -2532,7 +2537,7 @@ def show_quote_page() -> None:
                 if pdf_path.exists():
                     with open(str(pdf_path), "rb") as f:
                         dbx.files_upload(f.read(), dbx_quotes_path_pdf, mode=dropbox.files.WriteMode.overwrite)
-                st.success("✅ קובצי ה-Word וה-PDF נוצרו והועלו לדרופבוקס בהצלחה!")
+                    st.success("✅ קובצי ה-Word וה-PDF נוצרו והועלו לדרופבוקס בהצלחה!")
             except Exception as dbx_err:
                 st.warning(f"הקובץ נוצר בהצלחה, אך העלאה לדרופבוקס נכשלה: {dbx_err}")
 
