@@ -2927,13 +2927,6 @@ def show_quotes_management_page() -> None:
                 client = (row.get("Client") or "").strip()
                 project = (row.get("Project") or "").strip()
                 version = (row.get("Version") or "").strip()
-                label = f"🚀 פתח פרויקט - {client} | {project} | {version}"
-                if st.button(label, key=f"open_project_from_quote_{idx}"):
-                    st.session_state["open_project_from_quote"] = {
-                        "Client": client,
-                        "Project": project,
-                        "Version": version,
-                    }
 
                 # --- מרכז התנעה (Kickoff) ---
                 kickoff_key = f"kickoff_{idx}"
@@ -3006,7 +2999,7 @@ def show_quotes_management_page() -> None:
                         kickoff_deadline = st.date_input("דדליין לסיום", value=default_deadline, key=f"kickoff_deadline_{kickoff_key}")
                     with col_budget:
                         kickoff_budget = st.text_input("תקציב שעות (אופציונלי)", key=f"kickoff_budget_{kickoff_key}", placeholder="")
-                    if st.button("➕ הוסף לפרויקטים פעילים", key=f"kickoff_add_projects_{kickoff_key}"):
+                    if st.button("הזנק פרויקט 🚀", key=f"kickoff_add_projects_{kickoff_key}", type="primary"):
                         exists_csv = _project_exists_in_projects_csv(client, project)
                         exists_db = _project_exists_in_projects(client, project)
                         if exists_db:
@@ -3164,140 +3157,6 @@ def show_quotes_management_page() -> None:
                         f'<a href="{wa_link}" target="_blank" style="display:inline-block;padding:8px 16px;background:#25D366;color:white;text-decoration:none;border-radius:4px;">📱 וואצאפ לערן</a>',
                         unsafe_allow_html=True,
                     )
-
-        project_ctx = st.session_state.get("open_project_from_quote")
-        if project_ctx:
-            st.markdown("### פתיחת פרויקט מתוך הצעה מאושרת")
-            client = project_ctx.get("Client", "")
-            project = project_ctx.get("Project", "")
-            version = project_ctx.get("Version", "")
-
-            with st.form("open_project_form"):
-                st.text_input("לקוח", value=client, disabled=True, key="project_form_client")
-                st.text_input("פרויקט", value=project, disabled=True, key="project_form_project")
-                manager = st.selectbox(
-                    "מנהל פרויקט",
-                    PROJECT_MANAGERS,
-                    key="project_form_manager",
-                )
-                team = st.multiselect(
-                    "צוות",
-                    PROJECT_TEAM_MEMBERS,
-                    key="project_form_team",
-                )
-                submit_project = st.form_submit_button("הקם פרויקט ושלח לצוות")
-
-            if submit_project:
-                if not manager:
-                    st.warning("נא לבחור מנהל פרויקט.")
-                else:
-                    try:
-                        today_str = date.today().strftime("%d/%m/%Y")
-                        project_path = ensure_project_folders_for_approved_quote(client, project)
-                        # נתיב Dropbox יישמר ויישלח במייל כנתיב יחסי, זהה אצל כל עובד:
-                        # Projects/{Client}/{Project}
-                        budget_amt = 0.0
-                        for q in read_quotes_log():
-                            if (
-                                (q.get("Client") or "").strip() == client
-                                and (q.get("Project") or "").strip() == project
-                                and (q.get("Version") or "").strip() == version
-                            ):
-                                budget_amt = _extract_total_from_quote_row(q)
-                                break
-
-                        main_link_ap, upload_link_ap, deliverables_link_ap = "", "", ""
-                        try:
-                            with st.spinner('מייצר מבנה תיקיות ב-Dropbox ופותח פרויקט...'):
-                                result_ap = create_studio_dropbox_structure(project)
-                                if result_ap:
-                                    main_link_ap, upload_link_ap, deliverables_link_ap = result_ap
-                        except Exception as e:
-                            st.error(f'🚨 שגיאת דרופבוקס: {e}')
-                        append_project_record(
-                            client=client,
-                            project_name=project,
-                            manager=manager,
-                            team_members=team,
-                            status=DEFAULT_PROJECT_STATUS,
-                            start_date_str=today_str,
-                            budget_amount=budget_amt,
-                            dropbox_main=main_link_ap,
-                            dropbox_upload=upload_link_ap,
-                            dropbox_deliverables=deliverables_link_ap,
-                            skip_rerun=True,
-                        )
-                        st.cache_data.clear()
-
-                        # עדכון סטטוס ההצעה ל-Approved בגיליון quotes
-                        try:
-                            rows = read_quotes_log()
-                            updated = False
-                            for r in rows:
-                                if (
-                                    (r.get("Client") or "").strip() == client
-                                    and (r.get("Project") or "").strip() == project
-                                    and (r.get("Version") or "").strip() == version
-                                ):
-                                    if (r.get("Status") or "").strip() != "Signed":
-                                        r["Status"] = "Approved"
-                                    updated = True
-                                    break
-                            if updated:
-                                write_quotes_log(rows)
-                            else:
-                                st.warning("לא נמצאה הצעה תואמת לעדכון סטטוס בגיליון quotes.")
-                        except Exception as e:
-                            st.error(f"שגיאה בעדכון הסטטוס ל-Approved: {e}")
-
-                        manager_email = PROJECT_MANAGER_EMAILS.get(manager, "")
-                        team_str = ", ".join(team) if team else "הצוות"
-                        email_subject = f"פרויקט חדש לביצוע: {project}"
-                        email_body = f"""היי {team_str},
-נפתח פרויקט חדש עבור {client}.
-מנהל הפרויקט: {manager}.
-לינק לתיקייה:
-
-{project_path}
-"""
-                        if main_link_ap or upload_link_ap:
-                            email_body += "\n"
-                            if main_link_ap and main_link_ap.startswith("http"):
-                                email_body += f"📂 תיקיית פרויקט בדרופבוקס: {main_link_ap}\n"
-                            if upload_link_ap and upload_link_ap.startswith("http"):
-                                email_body += f"📥 לינק לשליחה ללקוח להעלאת חומרים: {upload_link_ap}\n"
-                        email_body += "\nבהצלחה!"
-
-                        gmail_url = build_gmail_link(
-                            manager_email,
-                            [],
-                            email_subject,
-                            email_body,
-                        )
-                        mailto_url = build_mailto_link(
-                            manager_email,
-                            [],
-                            email_subject,
-                            email_body,
-                        )
-
-                        st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
-                        col1_ap, col2_ap, col3_ap = st.columns(3)
-                        if main_link_ap and main_link_ap.startswith('http'):
-                            col1_ap.link_button("📂 תיקייה ראשית", main_link_ap)
-                        if upload_link_ap and upload_link_ap.startswith('http'):
-                            col2_ap.link_button("📥 בקשת חומרים", upload_link_ap)
-                        if deliverables_link_ap and deliverables_link_ap.startswith('http'):
-                            col3_ap.link_button("📤 תיקיית תוצרים", deliverables_link_ap)
-                        col_gmail_proj, col_outlook_proj = st.columns(2)
-                        with col_gmail_proj:
-                            st.link_button("📧 פתח טיוטה ב-Gmail למנהל הפרויקט", gmail_url)
-                        with col_outlook_proj:
-                            st.link_button("✉️ פתח טיוטה ב-Outlook למנהל הפרויקט", mailto_url)
-                        time.sleep(8)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"שגיאה בפתיחת הפרויקט ושמירתו: {e}")
 
         # פתיחת PDF - חיפוש בכל התיקיות (Pending/Approved/Rejected) + נתיב legacy
         st.divider()
@@ -3642,7 +3501,7 @@ def show_quotes_management_page() -> None:
                         kickoff_deadline_fb = st.date_input("דדליין לסיום", value=default_deadline_fb, key=f"kickoff_deadline_{kickoff_key_fb}")
                     with col_budget_fb:
                         kickoff_budget_fb = st.text_input("תקציב שעות (אופציונלי)", key=f"kickoff_budget_{kickoff_key_fb}", placeholder="")
-                    if st.button("➕ הוסף לפרויקטים פעילים", key=f"kickoff_add_projects_{kickoff_key_fb}"):
+                    if st.button("הזנק פרויקט 🚀", key=f"kickoff_add_projects_{kickoff_key_fb}", type="primary"):
                         exists_csv_fb = _project_exists_in_projects_csv(client_val, project_val)
                         exists_db_fb = _project_exists_in_projects(client_val, project_val)
                         if exists_db_fb:
