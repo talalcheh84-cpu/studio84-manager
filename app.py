@@ -26,6 +26,7 @@ import holidays
 from docxtpl import DocxTemplate
 import pandas as pd
 import gspread
+from gspread.exceptions import WorksheetNotFound
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- התחברות לגוגל שיטס ---
@@ -1054,11 +1055,21 @@ def send_kickoff_email(
         return False
 
 
-def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
-    """וידוא שקיים גיליון בגוגל שיטס. לא יוצר גיליון חדש - תציג שגיאה אם חסר."""
+def _ensure_sheet(sheet_name: str, columns: list[str]):
+    """וידוא שקיים גיליון בגוגל שיטס. יוצר גיליון חדש אוטומטית אם חסר."""
     if spreadsheet is None:
-        return
-    spreadsheet.worksheet(sheet_name)  # יקרוס ויציג שגיאה אם הגיליון חסר
+        return None
+    try:
+        worksheet = spreadsheet.worksheet(sheet_name)
+        return worksheet
+    except WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(
+            title=sheet_name,
+            rows=1000,
+            cols=max(len(columns), 20),
+        )
+        worksheet.append_row(columns)
+        return worksheet
 
 
 @st.cache_data(ttl=60)
