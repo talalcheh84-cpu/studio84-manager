@@ -1230,7 +1230,7 @@ def read_daily_tasks() -> list[dict]:
         return []
 
 
-def write_daily_tasks(rows: list[dict]) -> None:
+def write_daily_tasks(rows: list[dict], skip_rerun: bool = False) -> None:
     """שמירת משימות יומיות לגוגל שיטס (גיליון tasks)."""
     if spreadsheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
@@ -1242,7 +1242,8 @@ def write_daily_tasks(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
-        st.rerun()
+        if not skip_rerun:
+            st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
 
@@ -1252,6 +1253,7 @@ def append_kickoff_tasks_to_csv(
     assigned_team: list[str],
     project_template: list[str],
     task_deadline: date,
+    skip_rerun: bool = False,
 ) -> None:
     """יוצר שרשרת משימות ב-tasks.csv עבור כל עובד וכל שלב שנבחרו בהזנקה."""
     _ensure_tasks_csv_schema()
@@ -1269,7 +1271,7 @@ def append_kickoff_tasks_to_csv(
                 "Flexible": "0",
             }
             existing.append(row)
-    write_daily_tasks(existing)
+    write_daily_tasks(existing, skip_rerun=skip_rerun)
 
 
 def next_task_id(existing_rows: list[dict]) -> int:
@@ -1383,7 +1385,7 @@ def read_projects_csv() -> list[dict]:
         return []
 
 
-def write_projects_csv(rows: list[dict]) -> None:
+def write_projects_csv(rows: list[dict], skip_rerun: bool = False) -> None:
     """שמירת פרויקטים פעילים לגוגל שיטס (גיליון projects)."""
     if spreadsheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
@@ -1395,7 +1397,8 @@ def write_projects_csv(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
-        st.rerun()
+        if not skip_rerun:
+            st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
 
@@ -1421,6 +1424,7 @@ def append_to_projects_csv(
     budget_hours: str = "",
     budget_amount: str | float = "",
     project_contacts: str = "",
+    skip_rerun: bool = False,
 ) -> None:
     """Add a new row to projects.csv (from Kickoff on signed proposal)."""
     _ensure_projects_csv_schema()
@@ -1444,7 +1448,7 @@ def append_to_projects_csv(
         "אנשי קשר מקושרים": (project_contacts or "").strip(),
     }
     existing.append(row)
-    write_projects_csv(existing)
+    write_projects_csv(existing, skip_rerun=skip_rerun)
 
 
 def _project_exists_in_projects_csv(client: str, project: str) -> bool:
@@ -1482,7 +1486,7 @@ def _ensure_project_active_in_projects(
         if (r.get("Client") or "").strip() == c and (r.get("Project Name") or "").strip() == p:
             if (r.get("Status") or "").strip() != status:
                 r["Status"] = status
-                write_projects(rows)
+                write_projects(rows, skip_rerun=True)
                 return True
             return False
     return False
@@ -3087,7 +3091,7 @@ def show_quotes_management_page() -> None:
                                         main_link, upload_link, deliverables_link = result
                             except Exception as e:
                                 st.error(f'🚨 שגיאת דרופבוקס: {e}')
-                            append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str)
+                            append_to_projects_csv(client, project, deadline_str, team_str, kickoff_budget, budget_amt, project_contacts=contacts_str, skip_rerun=True)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
                                 client=client,
@@ -3102,7 +3106,6 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link,
                                 skip_rerun=True,
                             )
-                            st.cache_data.clear()
                             project_display = f"{client} | {project}"
                             if assigned_team and project_template:
                                 append_kickoff_tasks_to_csv(
@@ -3110,7 +3113,9 @@ def show_quotes_management_page() -> None:
                                     assigned_team=assigned_team,
                                     project_template=project_template,
                                     task_deadline=task_deadline,
+                                    skip_rerun=True,
                                 )
+                            st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
                             st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
@@ -3587,7 +3592,7 @@ def show_quotes_management_page() -> None:
                                         main_link_fb, upload_link_fb, deliverables_link_fb = result_fb
                             except Exception as e:
                                 st.error(f'🚨 שגיאת דרופבוקס: {e}')
-                            append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb)
+                            append_to_projects_csv(client_val, project_val, deadline_str_fb, team_str_fb, kickoff_budget_fb, budget_amt_fb, project_contacts=contacts_str_fb, skip_rerun=True)
                             # הוספה ל-projects.csv עם סטטוס 'בעבודה' – זהה למה שהמוניטור וה-Task Board מחפשים
                             append_project_record(
                                 client=client_val,
@@ -3602,7 +3607,6 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link_fb,
                                 skip_rerun=True,
                             )
-                            st.cache_data.clear()
                             project_display_fb = f"{client_val} | {project_val}"
                             if assigned_team_fb and project_template_fb:
                                 append_kickoff_tasks_to_csv(
@@ -3610,7 +3614,9 @@ def show_quotes_management_page() -> None:
                                     assigned_team=assigned_team_fb,
                                     project_template=project_template_fb,
                                     task_deadline=task_deadline_fb,
+                                    skip_rerun=True,
                                 )
+                            st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
                             st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
