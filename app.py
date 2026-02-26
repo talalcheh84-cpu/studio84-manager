@@ -29,6 +29,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- התחברות לגוגל שיטס ---
+# init_connection אינו משתמש ב-@st.cache_data - חיבור נוצר מחדש בעת הצורך
 def init_connection():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_data = st.secrets["gcp_service_account"]
@@ -36,10 +37,26 @@ def init_connection():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+
+def _get_spreadsheet():
+    """מחזיר את אובייקט הגיליון. אם אין חיבור, מנסה להתחבר מחדש לפני כתיבה."""
+    global spreadsheet, _sheets_init_error
+    if spreadsheet is not None:
+        return spreadsheet
+    try:
+        client = init_connection()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        _sheets_init_error = None
+        return spreadsheet
+    except Exception as e:
+        _sheets_init_error = e
+        return None
+
+
+SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
 _sheets_init_error = None
 try:
     client = init_connection()
-    SHEET_ID = '1ZvAtkWaXpf9zZRgXY2HUcRB6QWpUMe6KWNjPu-eyzdo'
     spreadsheet = client.open_by_key(SHEET_ID)
 except Exception as e:
     spreadsheet = None
@@ -1678,7 +1695,8 @@ def read_quotes_csv() -> list[dict]:
 
 def write_quotes_csv(rows: list[dict]) -> None:
     """Write full quote form data to Google Sheets (quotes tab)."""
-    if spreadsheet is None:
+    sheet = _get_spreadsheet()
+    if sheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
         return
     _ensure_quotes_csv_schema()
@@ -1689,6 +1707,7 @@ def write_quotes_csv(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        st.success("הצעת המחיר נשמרה בהצלחה בגוגל שיטס!")
         time.sleep(1.5)
         st.rerun()
     except Exception as e:
