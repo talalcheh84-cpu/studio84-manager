@@ -1268,7 +1268,7 @@ def read_tasks() -> list[dict]:
         return []
 
 
-def write_tasks(rows: list[dict]) -> None:
+def write_tasks(rows: list[dict], skip_rerun: bool = False) -> None:
     """שמירת משימות לגיליון tasks בגוגל שיטס."""
     if spreadsheet is None:
         err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
@@ -1282,8 +1282,9 @@ def write_tasks(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
-        time.sleep(1.5)
-        st.rerun()
+        if not skip_rerun:
+            time.sleep(1.5)
+            st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
 
@@ -4235,6 +4236,9 @@ def show_tasks_page() -> None:
                 d = _parse_date_safe(row.get("Due Date"), "Due Date")
                 return "🔴" if d is None or d < today_dt else ""
             df.insert(0, "איחור", df.apply(_overdue_indicator, axis=1))
+            # עמודת סימון למחיקה מרובה
+            DELETE_COL = "סמן למחיקה 🗑️"
+            df.insert(0, DELETE_COL, False)
             # זמנית: ביטול סינון לפי Assignee - הצגת כל המשימות
             # if not is_admin():
             #     current_user = _get_assignee_for_current_user()
@@ -4246,6 +4250,7 @@ def show_tasks_page() -> None:
             else:
                 try:
                     editable_cols = ["Status", "Priority", "Notes"]
+                    # איחור וסמן למחיקה - עריכה מותרת רק בסמן למחיקה (תיבת סימון)
                     disabled_cols = ["איחור"] + [c for c in TASKS_LOG_COLUMNS if c not in editable_cols]
                     edited_df = st.data_editor(
                         df,
@@ -4253,6 +4258,11 @@ def show_tasks_page() -> None:
                         use_container_width=True,
                         disabled=disabled_cols,
                         column_config={
+                            DELETE_COL: st.column_config.CheckboxColumn(
+                                DELETE_COL,
+                                help="סמן משימות למחיקה",
+                                default=False,
+                            ),
                             "Status": st.column_config.SelectboxColumn(
                                 "Status",
                                 options=TASK_STATUSES,
@@ -4270,8 +4280,8 @@ def show_tasks_page() -> None:
                     st.error(f"שגיאה בהצגת נתונים: {e}")
                     edited_df = df
                 if st.button("שמור שינויים", type="primary", key="save_tasks_btn"):
-                    # הסרת עמודת האינדיקציה לפני שמירה
-                    save_df = edited_df.drop(columns=["איחור"], errors="ignore")
+                    # הסרת עמודות עזר לפני שמירה (איחור, סמן למחיקה)
+                    save_df = edited_df.drop(columns=["איחור", DELETE_COL], errors="ignore")
                     if is_admin():
                         updated = save_df.to_dict(orient="records")
                     else:
@@ -4286,6 +4296,20 @@ def show_tasks_page() -> None:
                         updated = full_rows
                     write_tasks(updated)
                     st.success("השינויים נשמרו בהצלחה!")
+
+                # כפתור מחיקה מרובה
+                if st.button("מחק משימות שסומנו 🚨", type="primary", key="delete_tasks_btn"):
+                    to_delete = edited_df[edited_df[DELETE_COL] == True]
+                    if to_delete.empty:
+                        st.warning("לא סומנו משימות למחיקה. סמן תיבות בעמודה 'סמן למחיקה 🗑️' ולחץ שוב.")
+                    else:
+                        task_ids_to_remove = set(str(tid) for tid in to_delete["Task ID"].tolist())
+                        updated_rows = [r for r in tasks_rows if str(r.get("Task ID", "") or "").strip() not in task_ids_to_remove]
+                        write_tasks(updated_rows, skip_rerun=True)
+                        st.cache_data.clear()
+                        st.success("המשימות נמחקו בהצלחה!")
+                        time.sleep(1)
+                        st.rerun()
 
         # --- אנשי קשר לפרויקט ---
         st.divider()
