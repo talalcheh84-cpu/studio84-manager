@@ -198,6 +198,7 @@ def _write_messages_df(df: pd.DataFrame) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        time.sleep(1.5)
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת messages: {e}")
@@ -1072,6 +1073,7 @@ def save_contacts(df: pd.DataFrame) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        time.sleep(1.5)
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת contacts: {e}")
@@ -1105,6 +1107,7 @@ def write_project_contacts(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        time.sleep(1.5)
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת project_contacts: {e}")
@@ -1225,6 +1228,7 @@ def write_projects(rows: list[dict], skip_rerun: bool = False) -> None:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
         if not skip_rerun:
+            time.sleep(1.5)
             st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
@@ -1261,6 +1265,7 @@ def write_tasks(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        time.sleep(1.5)
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
@@ -1303,6 +1308,7 @@ def write_daily_tasks(rows: list[dict], skip_rerun: bool = False) -> None:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
         if not skip_rerun:
+            time.sleep(1.5)
             st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת tasks: {e}")
@@ -1458,6 +1464,7 @@ def write_projects_csv(rows: list[dict], skip_rerun: bool = False) -> None:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
         if not skip_rerun:
+            time.sleep(1.5)
             st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת projects: {e}")
@@ -1682,6 +1689,7 @@ def write_quotes_csv(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        time.sleep(1.5)
         st.rerun()
     except Exception as e:
         st.warning(f"שגיאה בשמירת quotes: {e}")
@@ -3093,6 +3101,7 @@ def show_quotes_management_page() -> None:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client, project, status="בעבודה")
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv:
@@ -3123,6 +3132,7 @@ def show_quotes_management_page() -> None:
                                 skip_rerun=True,
                             )
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
                             deadline_str_csv = kickoff_deadline.strftime('%d/%m/%Y')
@@ -3178,6 +3188,7 @@ def show_quotes_management_page() -> None:
                                     skip_rerun=True,
                                 )
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
                             send_kickoff_email(project, client, deadline_str, main_link, upload_link, deliverables_link)
@@ -3599,6 +3610,7 @@ def show_quotes_management_page() -> None:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client_val, project_val, status="בעבודה")
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
                         elif exists_csv_fb:
@@ -3628,6 +3640,7 @@ def show_quotes_management_page() -> None:
                                 skip_rerun=True,
                             )
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
                             deadline_str_csv_fb = kickoff_deadline_fb.strftime('%d/%m/%Y')
@@ -3682,6 +3695,7 @@ def show_quotes_management_page() -> None:
                                     skip_rerun=True,
                                 )
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
                             send_kickoff_email(project_val, client_val, deadline_str_fb, main_link_fb, upload_link_fb, deliverables_link_fb)
@@ -3899,6 +3913,7 @@ def show_monitor_3d_page() -> None:
         if changed:
             write_projects(full_rows, skip_rerun=True)
             st.cache_data.clear()
+            time.sleep(1.5)
             st.success("העדכונים נשמרו בהצלחה! ✅")
             st.rerun()
         else:
