@@ -2,9 +2,11 @@ import html
 import io
 import re
 import requests
+import smtplib
 import time
 import shutil
 from datetime import date, datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 import os
 import csv
@@ -974,6 +976,64 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
             raise
     except Exception:
         return ""
+
+
+def send_kickoff_email(
+    project_name: str,
+    client: str,
+    deadline_str: str,
+    main_link: str = "",
+    upload_link: str = "",
+    deliverables_link: str = "",
+) -> bool:
+    """
+    שולח מייל התנעת פרויקט לצוות עם לינקים ישירים לתיקיות הדרופבוקס.
+    משתמש ב-st.secrets: EMAIL_SENDER, EMAIL_PASSWORD, TEAM_EMAIL.
+    מחזיר True אם השליחה הצליחה, False אחרת.
+    """
+    try:
+        sender = st.secrets.get("EMAIL_SENDER", "").strip()
+        password = st.secrets.get("EMAIL_PASSWORD", "").strip()
+        recipient = st.secrets.get("TEAM_EMAIL", "").strip()
+        if not sender or not password or not recipient:
+            return False
+        links_html = []
+        if main_link and main_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(main_link)}">📂 תיקייה ראשית</a></li>')
+        if upload_link and upload_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(upload_link)}">📥 בקשת חומרים (העלאה ללקוח)</a></li>')
+        if deliverables_link and deliverables_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(deliverables_link)}">📤 תיקיית תוצרים</a></li>')
+        links_section = f"<ul>{''.join(links_html)}</ul>" if links_html else "<p>לינקים לא זמינים.</p>"
+        html_body = f"""
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; direction: rtl;">
+<h2>🚀 התנעת פרויקט חדש</h2>
+<table style="border-collapse: collapse;">
+<tr><td style="padding:6px;"><strong>פרויקט:</strong></td><td>{html.escape(project_name)}</td></tr>
+<tr><td style="padding:6px;"><strong>לקוח:</strong></td><td>{html.escape(client)}</td></tr>
+<tr><td style="padding:6px;"><strong>דדליין:</strong></td><td>{html.escape(deadline_str)}</td></tr>
+</table>
+<h3>לינקים לתיקיות הדרופבוקס</h3>
+{links_section}
+<p>בהצלחה!</p>
+</body>
+</html>
+"""
+        msg = EmailMessage()
+        msg["Subject"] = f"התנעת פרויקט: {project_name} - {client}"
+        msg["From"] = sender
+        msg["To"] = recipient
+        msg.set_content(f"פרויקט: {project_name}\nלקוח: {client}\nדדליין: {deadline_str}\n\nלינקים:\n{main_link}\n{upload_link}\n{deliverables_link}")
+        msg.add_alternative(html_body, subtype="html")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(sender, password)
+            smtp.send_message(msg)
+        return True
+    except Exception:
+        return False
 
 
 def _ensure_sheet(sheet_name: str, columns: list[str]) -> None:
@@ -3065,7 +3125,9 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
-                            st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
+                            deadline_str_csv = kickoff_deadline.strftime('%d/%m/%Y')
+                            send_kickoff_email(project, client, deadline_str_csv, main_link, upload_link, deliverables_link)
+                            st.success('✅ התיקיות נוצרו ומייל התנעה עם הלינקים נשלח לצוות!')
                             col1, col2, col3 = st.columns(3)
                             if main_link and main_link.startswith('http'):
                                 col1.link_button("📂 תיקייה ראשית", main_link)
@@ -3118,7 +3180,8 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
-                            st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
+                            send_kickoff_email(project, client, deadline_str, main_link, upload_link, deliverables_link)
+                            st.success('✅ התיקיות נוצרו ומייל התנעה עם הלינקים נשלח לצוות!')
                             col1, col2, col3 = st.columns(3)
                             if main_link and main_link.startswith('http'):
                                 col1.link_button("📂 תיקייה ראשית", main_link)
@@ -3567,7 +3630,9 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
-                            st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
+                            deadline_str_csv_fb = kickoff_deadline_fb.strftime('%d/%m/%Y')
+                            send_kickoff_email(project_val, client_val, deadline_str_csv_fb, main_link_fb, upload_link_fb, deliverables_link_fb)
+                            st.success('✅ התיקיות נוצרו ומייל התנעה עם הלינקים נשלח לצוות!')
                             col1_fb, col2_fb, col3_fb = st.columns(3)
                             if main_link_fb and main_link_fb.startswith('http'):
                                 col1_fb.link_button("📂 תיקייה ראשית", main_link_fb)
@@ -3619,7 +3684,8 @@ def show_quotes_management_page() -> None:
                             st.cache_data.clear()
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
-                            st.success('✅ הפרויקט והתיקיות הוקמו בהצלחה!')
+                            send_kickoff_email(project_val, client_val, deadline_str_fb, main_link_fb, upload_link_fb, deliverables_link_fb)
+                            st.success('✅ התיקיות נוצרו ומייל התנעה עם הלינקים נשלח לצוות!')
                             col1_fb, col2_fb, col3_fb = st.columns(3)
                             if main_link_fb and main_link_fb.startswith('http'):
                                 col1_fb.link_button("📂 תיקייה ראשית", main_link_fb)
