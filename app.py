@@ -667,6 +667,16 @@ TASKS_LOG_COLUMNS = [
 TASK_STATUSES = ["To Do", "In Progress", "Done", "Stuck"]
 TASK_PRIORITIES = ["רגיל", "דחוף", "קריטי"]
 
+# סוגי משימות להקצאה לצוות (טאב 'הקצאת משימות לצוות')
+TASK_TYPE_OPTIONS = [
+    "מידול (Modeling)",
+    "חומרים ותאורה (Texturing & Lighting)",
+    "רינדור (Rendering)",
+    "פוסט-פרודקשן (Post-Production)",
+    "הערות לקוח / תיקונים",
+    "אחר",
+]
+
 # סטטוסים שנחשבים "הושלם" - משימות עם סטטוס כזה לא יוצגו ברשימה
 DONE_STATUSES = ("done", "בוצע", "הושלם", "completed")
 
@@ -3956,7 +3966,7 @@ def show_tasks_page() -> None:
 
     sub_nav = st.radio(
         "בחר תצוגה:",
-        ["טבלת פרויקטים", "רשימת משימות (Task Board)", "לוח עומסים מנהלים (גאנט)"],
+        ["טבלת פרויקטים", "רשימת משימות (Task Board)", "הקצאת משימות לצוות 🎯", "לוח עומסים מנהלים (גאנט)"],
         horizontal=True,
     )
 
@@ -4419,6 +4429,41 @@ def show_tasks_page() -> None:
                     st.info("אין אנשי קשר. הוסף איש קשר חדש למעלה.")
         else:
             st.info("אין פרויקטים פעילים. הוסף פרויקטים כדי לנהל אנשי קשר.")
+
+    elif sub_nav == "הקצאת משימות לצוות 🎯":
+        st.subheader("הקצאת משימה חדשה לצוות")
+        projects_options = _get_active_projects_options()
+        if not projects_options:
+            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
+        else:
+            with st.form("assign_task_form", clear_on_submit=True):
+                selected_project = st.selectbox("פרויקט", options=projects_options, key="assign_task_project")
+                task_type = st.selectbox("סוג משימה", options=TASK_TYPE_OPTIONS, key="assign_task_type")
+                assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
+                due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
+                submitted = st.form_submit_button("הקצה משימה 🚀")
+
+            if submitted:
+                existing = read_tasks()
+                task_id = next_task_id(existing)
+                row = {
+                    "Task ID": str(task_id),
+                    "Project": selected_project,
+                    "Assignee": assignee,
+                    "Task Name": task_type,
+                    "Start Date": date.today().strftime("%d/%m/%Y"),
+                    "Due Date": due_date.strftime("%d/%m/%Y"),
+                    "Status": "To Do",
+                    "Priority": "רגיל",
+                    "Notes": "",
+                    "Flexible": "0",
+                }
+                existing.append(row)
+                write_tasks(existing, skip_rerun=True)
+                st.cache_data.clear()
+                st.success("המשימה הוקצתה בהצלחה! ✅")
+                time.sleep(1)
+                st.rerun()
 
     elif sub_nav == "לוח עומסים מנהלים (גאנט)":
         st.subheader("לוח עומסים צוותי - לוח שנה אינטראקטיבי")
