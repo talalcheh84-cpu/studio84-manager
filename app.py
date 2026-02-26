@@ -614,6 +614,16 @@ ALLOWED_PROJECT_STATUSES = [
 ]
 DEFAULT_PROJECT_STATUS = "ממתין להתחלה"
 
+# סטטוסים למוניטור צוות תלת-מימד (זרימת עבודה)
+MONITOR_3D_STATUS_OPTIONS = [
+    "ממתין להתחלה",
+    "במידול",
+    "חומרים ותאורה",
+    "ברינדור",
+    "פוסט-פרודקשן",
+    "מוכן לאישור לקוח",
+]
+
 # --- projects.csv (פרויקטים פעילים) ---
 PROJECTS_CSV_COLUMNS = ["ID", "Client", "Project", "Deadline", "Team", "Status", "Budget_Hours", 'היקף כספי (₪)', "אנשי קשר מקושרים"]
 PROJECTS_CSV_STATUSES = ["Active", "Done"]
@@ -3756,6 +3766,73 @@ def _parse_task_date(date_str: str):
     return None
 
 
+def show_monitor_3d_page() -> None:
+    """מסך מוניטור צוות תלת-מימד: פרויקטים פעילים עם עריכת סטטוס בלבד."""
+    st.title("מוניטור צוות תלת-מימד 🖥️")
+
+    projects_rows = read_projects()
+    if not projects_rows:
+        st.info("אין פרויקטים. נתוני הפרויקטים נמשכים מגוגל שיטס.")
+        return
+
+    # סינון: רק פרויקטים פעילים (התעלם מ'הסתיים' ו'בוטל')
+    EXCLUDED_STATUSES = ("הסתיים", "בוטל")
+    excluded_lower = [s.strip().lower() for s in EXCLUDED_STATUSES]
+    active_rows = [
+        r for r in projects_rows
+        if (r.get("Status") or "").strip().lower() not in excluded_lower
+    ]
+
+    if not active_rows:
+        st.info("לא נמצאו פרויקטים פעילים (כל הפרויקטים בסטטוס 'הסתיים' או 'בוטל').")
+        return
+
+    # עמודות להצגה: שם פרויקט, לקוח, תאריך יעד, סטטוס
+    df_full = pd.DataFrame(active_rows, columns=PROJECTS_DB_COLUMNS).fillna("")
+    df_display = df_full[["Project Name", "Client", "Start Date", "Status"]].copy()
+    df_display = df_display.rename(columns={"Start Date": "תאריך יעד (דד-ליין)", "Project Name": "שם פרויקט", "Client": "לקוח", "Status": "סטטוס"})
+    df_display = df_display[["שם פרויקט", "לקוח", "תאריך יעד (דד-ליין)", "סטטוס"]]  # סדר לפי הדרישה
+
+    # אפשרויות סטטוס למוניטור תלת-מימד + סטטוסים קיימים בנתונים
+    status_options = list(dict.fromkeys(MONITOR_3D_STATUS_OPTIONS + [s for s in df_display["סטטוס"].unique() if s and str(s).strip()]))
+
+    edited_df = st.data_editor(
+        df_display,
+        hide_index=True,
+        use_container_width=True,
+        disabled=["שם פרויקט", "לקוח", "תאריך יעד (דד-ליין)"],
+        column_config={
+            "סטטוס": st.column_config.SelectboxColumn(
+                "סטטוס",
+                options=status_options,
+                required=True,
+            ),
+        },
+        key="monitor_3d_editor",
+    )
+
+    if st.button("שמור עדכוני סטטוס 💾", type="primary", key="save_monitor_3d_btn", use_container_width=True):
+        # מיזוג הסטטוס המעודכן חזרה לרשימה המלאה
+        edited_by_key = {(str(r.get("לקוח", "")), str(r.get("שם פרויקט", ""))): r.get("סטטוס", "") for _, r in edited_df.iterrows()}
+        full_rows = read_projects()
+        changed = False
+        for i, row in enumerate(full_rows):
+            key = (str(row.get("Client", "")), str(row.get("Project Name", "")))
+            if key in edited_by_key:
+                new_status = (edited_by_key[key] or "").strip()
+                if new_status and (row.get("Status") or "").strip() != new_status:
+                    full_rows[i] = {**row, "Status": new_status}
+                    changed = True
+
+        if changed:
+            write_projects(full_rows, skip_rerun=True)
+            st.cache_data.clear()
+            st.success("העדכונים נשמרו בהצלחה! ✅")
+            st.rerun()
+        else:
+            st.info("לא בוצעו שינויים בשמירה.")
+
+
 def show_tasks_page() -> None:
     st.title("ניהול פרויקטים ומשימות")
 
@@ -4838,8 +4915,11 @@ def main() -> None:
         show_my_work_page()
         return
 
-    # מנהל - ניווט ראשי: חדר מצב vs ניהול שוטף
-    main_nav = st.sidebar.radio("ניווט ראשי:", ["📊 חדר מצב (מוניטור פרויקטים)", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"])
+    # מנהל - ניווט ראשי: חדר מצב, מוניטור תלת-מימד, ניהול שוטף
+    main_nav = st.sidebar.radio(
+        "ניווט ראשי:",
+        ["📊 חדר מצב (מוניטור פרויקטים)", "🖥️ מוניטור צוות תלת-מימד", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"],
+    )
 
     # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
     projects_rows_debug = read_projects()
@@ -4942,10 +5022,16 @@ def main() -> None:
                         write_projects(updated)
                         st.success("הנתונים עודכנו בהצלחה!")
                         st.rerun()
-                if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
-                    st.session_state.monitor_filter = None
-                    st.session_state.monitor_title = ""
-                    st.rerun()
+        if st.button("✖️ סגור תצוגה ממוקדת", key="close_monitor_drill"):
+            st.session_state.monitor_filter = None
+            st.session_state.monitor_title = ""
+            st.rerun()
+
+    elif main_nav == "🖥️ מוניטור צוות תלת-מימד":
+        _render_quick_comm_notifications()
+        _render_quick_comm_sidebar_form()
+        _render_dropbox_refresh_token_sidebar()
+        show_monitor_3d_page()
 
     elif main_nav == "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)":
         _render_quick_comm_notifications()
