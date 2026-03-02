@@ -607,7 +607,7 @@ QUOTES_CSV_COLUMNS = [
     "Status", "File Path", "Signed File Path", "Total Price",
 ]
 
-ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed"]
+ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
 DEFAULT_QUOTE_STATUS = "Draft"
 PROJECTS_DB_COLUMNS = [
     "Project ID",
@@ -1765,6 +1765,79 @@ def update_quote_in_csv(client: str, project: str, version: str, updated_row: di
     return False
 
 
+# סטטוסים חיוביים שמאפשרים המרה לפרויקט
+QUOTE_STATUSES_ALLOWING_CONVERT = ["Approved", "Signed"]
+
+
+def convert_quote_to_project(client: str, project: str, version: str) -> tuple[bool, str]:
+    """
+    המרת הצעת מחיר מאושרת לפרויקט פעיל.
+    מבצע: משיכת נתונים, יצירת שורה ב-projects, תיקיות דרופבוקס, שליחת מייל, עדכון סטטוס הצעה.
+    מחזיר (הצלחה, הודעת שגיאה).
+    """
+    try:
+        # א. משיכת נתוני הצעת המחיר
+        full_row = get_quote_from_csv(client, project, version)
+        if not full_row:
+            return False, "ההצעה לא נמצאה במערכת."
+        client_name = (full_row.get("Client") or "").strip()
+        project_name = (full_row.get("Project") or "").strip()
+        total_amount = _extract_total_from_quote_row(full_row)
+        total_str = f"{total_amount:.2f}" if total_amount else ""
+        if not client_name or not project_name:
+            return False, "חסרים שם לקוח או שם פרויקט בהצעה."
+        status = (full_row.get("Status") or "").strip()
+        if status not in QUOTE_STATUSES_ALLOWING_CONVERT:
+            return False, f"ניתן להמיר רק הצעות בסטטוס 'אושר' או 'חתום'. הסטטוס הנוכחי: {status}"
+        if status == "הומר לפרויקט":
+            return False, "ההצעה כבר הומרה לפרויקט בעבר."
+
+        today_str = date.today().strftime("%d/%m/%Y")
+        dropbox_project_id = f"{client_name}_{project_name}".replace(" ", "_")
+
+        # ב. יצירת שורה חדשה בגיליון projects
+        result = create_studio_dropbox_structure(dropbox_project_id)
+        if not result:
+            return False, "יצירת תיקיות הדרופבוקס נכשלה."
+        main_link, upload_link, deliverables_link = result
+
+        append_project_record(
+            client=client_name,
+            project_name=project_name,
+            manager="",
+            team_members=[],
+            status="ממתין להתחלה",
+            start_date_str=today_str,
+            budget_amount=total_str,
+            dropbox_main=main_link,
+            dropbox_upload=upload_link,
+            dropbox_deliverables=deliverables_link,
+            skip_rerun=True,
+        )
+
+        # ד. שליחת מייל לצוות
+        ok = send_kickoff_email(
+            project_name=project_name,
+            client=client_name,
+            deadline_str=today_str,
+            main_link=main_link,
+            upload_link=upload_link,
+            deliverables_link=deliverables_link,
+        )
+        if not ok:
+            pass  # לא נכשל - הפרויקט נוצר, המייל הוא בונוס
+
+        # ה. עדכון סטטוס הצעת המחיר
+        updated = {c: (full_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
+        updated["Status"] = "הומר לפרויקט"
+        if not update_quote_in_csv(client, project, version, updated):
+            return False, "לא ניתן לעדכן את סטטוס ההצעה."
+
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def build_mailto_link(to: str, cc_list, subject: str, body: str) -> str:
     """
     Create a mailto: link with encoded subject & body and optional CC.
@@ -2873,6 +2946,46 @@ def show_quotes_management_page() -> None:
             },
             key="quotes_editor",
         )
+
+        # --- הפיכת הצעת מחיר מאושרת לפרויקט חדש ---
+        convertible = [
+            (i, r) for i, r in edited_df.iterrows()
+            if (r.get("Status") or "").strip() in QUOTE_STATUSES_ALLOWING_CONVERT
+        ]
+        if convertible:
+            st.subheader("הפוך לפרויקט חדש")
+            convert_options = []
+            for idx, r in convertible:
+                v = (r.get("Version") or "").strip() or "1"
+                lbl = f"{r.get('Date','')} | {r.get('Client','')} | {r.get('Project','')} | גרסה: {v}"
+                convert_options.append((idx, lbl, r))
+            convert_labels = {i: lbl for i, lbl, _ in convert_options}
+            selected_convert_idx = st.selectbox(
+                "בחר הצעה מאושרת להמרה לפרויקט",
+                options=[i for i, _, _ in convert_options],
+                format_func=lambda i: convert_labels.get(i, str(i)),
+                key="convert_quote_select",
+            )
+            convert_clicked = st.button(
+                "הפוך לפרויקט חדש 🚀",
+                key="convert_quote_btn",
+                type="primary",
+            )
+            if convert_clicked and selected_convert_idx is not None:
+                sel = next((r for i, _, r in convert_options if i == selected_convert_idx), None)
+                if sel is not None:
+                    client_c = (sel.get("Client") or "").strip()
+                    project_c = (sel.get("Project") or "").strip()
+                    version_c = (sel.get("Version") or "").strip() or "V1"
+                    with st.spinner("מייצר פרויקט, תיקיות דרופבוקס ומייל לצוות..."):
+                        ok, err = convert_quote_to_project(client_c, project_c, version_c)
+                    if ok:
+                        st.cache_data.clear()
+                        st.success("🎉 הפרויקט הוקם בהצלחה! המייל נשלח לצוות.")
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.error(f"שגיאה בהמרה: {err}")
 
         # --- בחירת הצעה למחיקה ---
         st.subheader("מחיקת הצעה")
