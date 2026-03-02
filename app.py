@@ -4819,7 +4819,7 @@ def _validate_credentials(username_input: str, password_input: str) -> tuple[boo
     קוד דפנסיבי עם הודעות שגיאה מפורטות לדיבאג.
     """
     creds = st.secrets.get("credentials", None)
-    if creds is None or (isinstance(creds, (dict, list)) and len(creds) == 0):
+    if creds is None or (isinstance(creds, dict) and len(creds) == 0):
         return (False, None, "שגיאת מערכת: לא נמצאו הגדרות credentials בכספת (Secrets)")
 
     username = username_input.strip().lower()
@@ -4829,15 +4829,13 @@ def _validate_credentials(username_input: str, password_input: str) -> tuple[boo
     if username not in creds:
         return (False, None, f"שם המשתמש [{username}] לא קיים במערכת")
 
-    user_creds = creds[username]
-    if isinstance(user_creds, dict):
-        correct_password = user_creds.get("password")
-        user_role = (user_creds.get("role") or "team").strip() or "team"
-    elif isinstance(user_creds, str):
-        correct_password = user_creds
-        user_role = "team"
+    user_entry = creds[username]
+    if isinstance(user_entry, dict):
+        correct_password = user_entry.get("password")
+        user_role = (user_entry.get("role") or "team").strip() or "team"
     else:
-        return (False, None, f"פורמט credentials לא תקין עבור המשתמש [{username}]")
+        correct_password = user_entry
+        user_role = "team"
 
     password_entered = password_input.strip()
     if password_entered != correct_password:
@@ -4873,9 +4871,10 @@ def show_login_screen() -> None:
                 st.success("התחברת בהצלחה!")
                 st.rerun()
             else:
-                st.error(error_msg or "שגיאה בהתחברות")
+                err = error_msg or "שגיאה בהתחברות"
+                st.error(f"**שגיאת התחברות (Debug):** {err}")
         except Exception as e:
-            st.error(f"שגיאת מערכת (Debug): {e}")
+            st.error(f"**שגיאת מערכת (Debug):** {type(e).__name__}: {e}")
 
 
 def _get_assignee_for_current_user() -> str:
