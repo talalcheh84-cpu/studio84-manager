@@ -4814,38 +4814,27 @@ def show_contacts_page() -> None:
 
 def _validate_credentials(username_input: str, password_input: str) -> tuple[bool, str | None, str | None]:
     """
-    מאמת שם משתמש וסיסמה מול st.secrets['credentials'].
+    מאמת שם משתמש וסיסמה מול st.secrets (מבנה שטוח: passwords, roles).
     מחזיר (success, role, error_message).
     """
-    creds = st.secrets.get("credentials", None)
-    if creds is None or (isinstance(creds, dict) and len(creds) == 0):
-        return (False, None, "שם משתמש או סיסמה שגויים")
-
     username = username_input.strip().lower()
     if not username:
         return (False, None, "שם משתמש או סיסמה שגויים")
 
-    if username not in creds:
-        return (False, None, "שם משתמש או סיסמה שגויים")
+    passwords = st.secrets.get("passwords", {}) or {}
+    roles = st.secrets.get("roles", {}) or {}
+    correct_password = passwords.get(username, None)
+    user_role = roles.get(username, None)
 
-    user_entry = creds[username]
-    if isinstance(user_entry, dict):
-        correct_password = user_entry.get("password")
-        user_role = (user_entry.get("role") or "team").strip() or "team"
-    else:
-        correct_password = user_entry
-        user_role = "team"
-
-    if str(password_input).strip() != str(correct_password).strip():
-        return (False, None, "שם משתמש או סיסמה שגויים")
-
-    return (True, user_role, None)
+    if correct_password and str(password_input).strip() == str(correct_password).strip():
+        return (True, (user_role or "team").strip() or "team", None)
+    return (False, None, "שם משתמש או סיסמה שגויים")
 
 
 def show_login_screen() -> None:
     """
     מסך התחברות - טופס שם משתמש וסיסמה.
-    מאמת מול st.secrets['credentials'] ושומר ב-session_state: logged_in, username, role.
+    מאמת מול st.secrets (מבנה שטוח: passwords, roles) ושומר ב-session_state: logged_in, username, role.
     """
     if st.session_state.get("logged_in"):
         return
@@ -4858,14 +4847,13 @@ def show_login_screen() -> None:
 
     if st.button("התחבר", type="primary", key="login_submit"):
         try:
-            success, role, error_msg = _validate_credentials(username_input, password_input)
-            if success and role:
-                st.session_state["logged_in"] = True
+            success, role, _ = _validate_credentials(username_input, password_input)
+            if success:
                 username_normalized = username_input.strip().lower()
+                st.session_state["logged_in"] = True
                 st.session_state["username"] = username_normalized
-                st.session_state["role"] = role
+                st.session_state["role"] = role or "team"
                 st.session_state["current_user"] = username_normalized
-                st.success("התחברת בהצלחה!")
                 st.rerun()
             else:
                 st.error("שם משתמש או סיסמה שגויים")
