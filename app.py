@@ -4816,18 +4816,17 @@ def _validate_credentials(username_input: str, password_input: str) -> tuple[boo
     """
     מאמת שם משתמש וסיסמה מול st.secrets['credentials'].
     מחזיר (success, role, error_message).
-    קוד דפנסיבי עם הודעות שגיאה מפורטות לדיבאג.
     """
     creds = st.secrets.get("credentials", None)
     if creds is None or (isinstance(creds, dict) and len(creds) == 0):
-        return (False, None, "שגיאת מערכת: לא נמצאו הגדרות credentials בכספת (Secrets)")
+        return (False, None, "שם משתמש או סיסמה שגויים")
 
     username = username_input.strip().lower()
     if not username:
-        return (False, None, "שם המשתמש ריק")
+        return (False, None, "שם משתמש או סיסמה שגויים")
 
     if username not in creds:
-        return (False, None, f"שם המשתמש [{username}] לא קיים במערכת")
+        return (False, None, "שם משתמש או סיסמה שגויים")
 
     user_entry = creds[username]
     if isinstance(user_entry, dict):
@@ -4837,9 +4836,8 @@ def _validate_credentials(username_input: str, password_input: str) -> tuple[boo
         correct_password = user_entry
         user_role = "team"
 
-    password_entered = password_input.strip()
-    if password_entered != correct_password:
-        return (False, None, f"סיסמה שגויה עבור המשתמש [{username}]")
+    if str(password_input).strip() != str(correct_password).strip():
+        return (False, None, "שם משתמש או סיסמה שגויים")
 
     return (True, user_role, None)
 
@@ -4848,7 +4846,6 @@ def show_login_screen() -> None:
     """
     מסך התחברות - טופס שם משתמש וסיסמה.
     מאמת מול st.secrets['credentials'] ושומר ב-session_state: logged_in, username, role.
-    קוד דפנסיבי עם הודעות שגיאה מפורטות לדיבאג.
     """
     if st.session_state.get("logged_in"):
         return
@@ -4871,10 +4868,9 @@ def show_login_screen() -> None:
                 st.success("התחברת בהצלחה!")
                 st.rerun()
             else:
-                err = error_msg or "שגיאה בהתחברות"
-                st.error(f"**שגיאת התחברות (Debug):** {err}")
-        except Exception as e:
-            st.error(f"**שגיאת מערכת (Debug):** {type(e).__name__}: {e}")
+                st.error("שם משתמש או סיסמה שגויים")
+        except Exception:
+            st.error("שם משתמש או סיסמה שגויים")
 
 
 def _get_assignee_for_current_user() -> str:
