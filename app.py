@@ -4812,44 +4812,45 @@ def show_contacts_page() -> None:
             st.error(f"שגיאה בשמירה: {e}")
 
 
-def _validate_credentials(username: str, password: str) -> str | None:
+def _validate_credentials(username_input: str, password_input: str) -> tuple[bool, str | None, str | None]:
     """
     מאמת שם משתמש וסיסמה מול st.secrets['credentials'].
-    מחזיר את ה-role אם ההתחברות תקינה, None אחרת.
-    פורמט credentials ב-secrets: כל מפתח = שם משתמש (באותיות קטנות), ערך = dict עם password ו-role,
-    או מחרוזת (סיסמה בלבד) - אז role ברירת מחדל 'team'.
-    שם המשתמש מומר לאותיות קטנות כדי למנוע בעיות Case Sensitivity.
+    מחזיר (success, role, error_message).
+    קוד דפנסיבי עם הודעות שגיאה מפורטות לדיבאג.
     """
-    if not username or not password:
-        return None
-    try:
-        creds = st.secrets.get("credentials", {})
-        if not creds:
-            return None
-        # המרה לאותיות קטנות למניעת רגישות לאותיות רישיות
-        username_lower = username.strip().lower()
-        if username_lower not in creds:
-            return None
-        user_creds = creds[username_lower]
-        if isinstance(user_creds, dict):
-            correct_password = user_creds.get("password", "")
-            user_role = (user_creds.get("role") or "team").strip() or "team"
-            if correct_password != password:
-                return None
-            return user_role
-        if isinstance(user_creds, str):
-            if user_creds != password:
-                return None
-            return "team"
-        return None
-    except Exception:
-        return None
+    creds = st.secrets.get("credentials", None)
+    if creds is None or (isinstance(creds, (dict, list)) and len(creds) == 0):
+        return (False, None, "שגיאת מערכת: לא נמצאו הגדרות credentials בכספת (Secrets)")
+
+    username = username_input.strip().lower()
+    if not username:
+        return (False, None, "שם המשתמש ריק")
+
+    if username not in creds:
+        return (False, None, f"שם המשתמש [{username}] לא קיים במערכת")
+
+    user_creds = creds[username]
+    if isinstance(user_creds, dict):
+        correct_password = user_creds.get("password")
+        user_role = (user_creds.get("role") or "team").strip() or "team"
+    elif isinstance(user_creds, str):
+        correct_password = user_creds
+        user_role = "team"
+    else:
+        return (False, None, f"פורמט credentials לא תקין עבור המשתמש [{username}]")
+
+    password_entered = password_input.strip()
+    if password_entered != correct_password:
+        return (False, None, f"סיסמה שגויה עבור המשתמש [{username}]")
+
+    return (True, user_role, None)
 
 
 def show_login_screen() -> None:
     """
     מסך התחברות - טופס שם משתמש וסיסמה.
     מאמת מול st.secrets['credentials'] ושומר ב-session_state: logged_in, username, role.
+    קוד דפנסיבי עם הודעות שגיאה מפורטות לדיבאג.
     """
     if st.session_state.get("logged_in"):
         return
@@ -4857,21 +4858,24 @@ def show_login_screen() -> None:
     st.title("🔐 כניסה למערכת ניהול סטודיו")
     st.markdown("---")
 
-    username = st.text_input("שם משתמש", key="login_username", placeholder="הזן שם משתמש")
-    password = st.text_input("סיסמה", type="password", key="login_password", placeholder="הזן סיסמה")
+    username_input = st.text_input("שם משתמש", key="login_username", placeholder="הזן שם משתמש")
+    password_input = st.text_input("סיסמה", type="password", key="login_password", placeholder="הזן סיסמה")
 
     if st.button("התחבר", type="primary", key="login_submit"):
-        role = _validate_credentials(username, password)
-        if role:
-            st.session_state["logged_in"] = True
-            username_normalized = username.strip().lower()
-            st.session_state["username"] = username_normalized
-            st.session_state["role"] = role
-            st.session_state["current_user"] = username_normalized  # תאימות לקוד קיים
-            st.success("התחברת בהצלחה!")
-            st.rerun()
-        else:
-            st.error("שם משתמש או סיסמה שגויים")
+        try:
+            success, role, error_msg = _validate_credentials(username_input, password_input)
+            if success and role:
+                st.session_state["logged_in"] = True
+                username_normalized = username_input.strip().lower()
+                st.session_state["username"] = username_normalized
+                st.session_state["role"] = role
+                st.session_state["current_user"] = username_normalized
+                st.success("התחברת בהצלחה!")
+                st.rerun()
+            else:
+                st.error(error_msg or "שגיאה בהתחברות")
+        except Exception as e:
+            st.error(f"שגיאת מערכת (Debug): {e}")
 
 
 def _get_assignee_for_current_user() -> str:
