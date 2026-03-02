@@ -4816,8 +4816,9 @@ def _validate_credentials(username: str, password: str) -> str | None:
     """
     מאמת שם משתמש וסיסמה מול st.secrets['credentials'].
     מחזיר את ה-role אם ההתחברות תקינה, None אחרת.
-    פורמט credentials ב-secrets: כל מפתח = שם משתמש, ערך = dict עם password ו-role,
+    פורמט credentials ב-secrets: כל מפתח = שם משתמש (באותיות קטנות), ערך = dict עם password ו-role,
     או מחרוזת (סיסמה בלבד) - אז role ברירת מחדל 'team'.
+    שם המשתמש מומר לאותיות קטנות כדי למנוע בעיות Case Sensitivity.
     """
     if not username or not password:
         return None
@@ -4825,13 +4826,17 @@ def _validate_credentials(username: str, password: str) -> str | None:
         creds = st.secrets.get("credentials", {})
         if not creds:
             return None
-        user_creds = creds.get(username.strip())
-        if user_creds is None:
+        # המרה לאותיות קטנות למניעת רגישות לאותיות רישיות
+        username_lower = username.strip().lower()
+        if username_lower not in creds:
             return None
+        user_creds = creds[username_lower]
         if isinstance(user_creds, dict):
-            if (user_creds.get("password") or "") != password:
+            correct_password = user_creds.get("password", "")
+            user_role = (user_creds.get("role") or "team").strip() or "team"
+            if correct_password != password:
                 return None
-            return (user_creds.get("role") or "team").strip() or "team"
+            return user_role
         if isinstance(user_creds, str):
             if user_creds != password:
                 return None
@@ -4859,13 +4864,14 @@ def show_login_screen() -> None:
         role = _validate_credentials(username, password)
         if role:
             st.session_state["logged_in"] = True
-            st.session_state["username"] = username.strip()
+            username_normalized = username.strip().lower()
+            st.session_state["username"] = username_normalized
             st.session_state["role"] = role
-            st.session_state["current_user"] = username.strip()  # תאימות לקוד קיים
+            st.session_state["current_user"] = username_normalized  # תאימות לקוד קיים
             st.success("התחברת בהצלחה!")
             st.rerun()
         else:
-            st.error("שם משתמש או סיסמה שגויים. נסה שוב.")
+            st.error("שם משתמש או סיסמה שגויים")
 
 
 def _get_assignee_for_current_user() -> str:
