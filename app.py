@@ -4812,58 +4812,70 @@ def show_contacts_page() -> None:
             st.error(f"שגיאה בשמירה: {e}")
 
 
-def show_login_screen() -> bool:
+def _validate_credentials(username: str, password: str) -> str | None:
     """
-    מסך כניסה - Admin דורש סיסמה, Team Member לא.
-    שומר את שם המשתמש הנבחר ב-st.session_state.current_user.
-    מחזיר True אם המשתמש התחבר בהצלחה.
+    מאמת שם משתמש וסיסמה מול st.secrets['credentials'].
+    מחזיר את ה-role אם ההתחברות תקינה, None אחרת.
+    פורמט credentials ב-secrets: כל מפתח = שם משתמש, ערך = dict עם password ו-role,
+    או מחרוזת (סיסמה בלבד) - אז role ברירת מחדל 'team'.
     """
-    if st.session_state.get("authenticated"):
-        return True
+    if not username or not password:
+        return None
+    try:
+        creds = st.secrets.get("credentials", {})
+        if not creds:
+            return None
+        user_creds = creds.get(username.strip())
+        if user_creds is None:
+            return None
+        if isinstance(user_creds, dict):
+            if (user_creds.get("password") or "") != password:
+                return None
+            return (user_creds.get("role") or "team").strip() or "team"
+        if isinstance(user_creds, str):
+            if user_creds != password:
+                return None
+            return "team"
+        return None
+    except Exception:
+        return None
+
+
+def show_login_screen() -> None:
+    """
+    מסך התחברות - טופס שם משתמש וסיסמה.
+    מאמת מול st.secrets['credentials'] ושומר ב-session_state: logged_in, username, role.
+    """
+    if st.session_state.get("logged_in"):
+        return
 
     st.title("🔐 כניסה למערכת ניהול סטודיו")
     st.markdown("---")
 
-    selected_user = st.selectbox(
-        "בחר משתמש",
-        TEAM_MEMBERS_LOGIN,
-        key="login_user_select",
-    )
+    username = st.text_input("שם משתמש", key="login_username", placeholder="הזן שם משתמש")
+    password = st.text_input("סיסמה", type="password", key="login_password", placeholder="הזן סיסמה")
 
-    if selected_user == "Admin (טלי / ערן)":
-        password = st.text_input("סיסמה", type="password", key="login_password", placeholder="הזן סיסמה")
-        if st.button("התחבר", type="primary", key="login_submit"):
-            if password == ADMIN_PASSWORD:
-                st.session_state["authenticated"] = True
-                st.session_state["user_type"] = "admin"
-                st.session_state["current_user"] = selected_user
-                st.success("התחברת בהצלחה!")
-                st.rerun()
-            else:
-                st.error("סיסמה שגויה. נסה שוב.")
-    else:
-        if st.button("התחבר", type="primary", key="login_submit_team"):
-            st.session_state["authenticated"] = True
-            st.session_state["user_type"] = "team_member"
-            st.session_state["current_user"] = selected_user
-            st.success("שלום צוות!")
+    if st.button("התחבר", type="primary", key="login_submit"):
+        role = _validate_credentials(username, password)
+        if role:
+            st.session_state["logged_in"] = True
+            st.session_state["username"] = username.strip()
+            st.session_state["role"] = role
+            st.session_state["current_user"] = username.strip()  # תאימות לקוד קיים
+            st.success("התחברת בהצלחה!")
             st.rerun()
-
-    return False
+        else:
+            st.error("שם משתמש או סיסמה שגויים. נסה שוב.")
 
 
 def _get_assignee_for_current_user() -> str:
     """מחזיר את ה-Assignee המתאים למשתמש הנוכחי (לסינון משימות)."""
-    return (st.session_state.get("current_user") or "צוות").strip()
+    return (st.session_state.get("username") or st.session_state.get("current_user") or "צוות").strip()
 
 
 def is_admin() -> bool:
-    """מזהה אם המשתמש המחובר הוא מנהל (Admin או שמות המנהלים)."""
-    user_type = st.session_state.get("user_type")
-    if user_type == "admin":
-        return True
-    current_user = (st.session_state.get("current_user") or "").strip()
-    return current_user in ADMIN_NAMES
+    """מזהה אם המשתמש המחובר הוא מנהל (role == 'manager')."""
+    return st.session_state.get("role") == "manager"
 
 
 def _user_in_team(team_value: str, current_user: str) -> bool:
@@ -5183,8 +5195,8 @@ def show_daily_tasks_page() -> None:
 
 
 def main() -> None:
-    # בדיקת התחברות
-    if not st.session_state.get("authenticated"):
+    # בדיקת התחברות - אם לא מחובר: הסתר תפריט צד והצג רק טופס התחברות
+    if not st.session_state.get("logged_in"):
         show_login_screen()
         return
 
@@ -5194,27 +5206,25 @@ def main() -> None:
     if "monitor_title" not in st.session_state:
         st.session_state.monitor_title = "כל הפרויקטים (ללא סינון)"
 
-    user_type = st.session_state.get("user_type", "team_member")
+    role = st.session_state.get("role", "team")
 
     st.sidebar.title("תפריט ניהול")
     if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
         st.rerun()
-    if st.sidebar.button("🚪 התנתק", key="logout_btn"):
-        st.session_state["authenticated"] = False
-        st.session_state["user_type"] = None
-        st.session_state["current_user"] = None
-        st.rerun()
 
-    if user_type == "team_member":
-        # עובד - רק לשונית 'העבודה שלי'
-        if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
-            st.rerun()
+    if role == "team":
+        # צוות - רק מוניטור צוות תלת-מימד והתקשורת המהירה
         _render_quick_comm_sidebar_form()
-        _render_dropbox_refresh_token_sidebar()
-        show_my_work_page()
+        _render_quick_comm_notifications()
+        show_monitor_3d_page()
+        st.sidebar.markdown("---")
+        if st.sidebar.button("התנתק 🚪", key="logout_btn", use_container_width=True):
+            for k in ("logged_in", "username", "role", "current_user"):
+                st.session_state.pop(k, None)
+            st.rerun()
         return
 
-    # מנהל - ניווט ראשי: חדר מצב, מוניטור תלת-מימד, ניהול שוטף
+    # מנהל - ניווט מלא: חדר מצב, מוניטור תלת-מימד, ניהול שוטף
     main_nav = st.sidebar.radio(
         "ניווט ראשי:",
         ["📊 חדר מצב (מוניטור פרויקטים)", "🖥️ מוניטור צוות תלת-מימד", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"],
@@ -5358,6 +5368,13 @@ def main() -> None:
             show_contacts_page()
         else:
             show_tasks_page()
+
+    # כפתור התנתקות בתחתית תפריט הצד (למנהל)
+    st.sidebar.markdown("---")
+    if st.sidebar.button("התנתק 🚪", key="logout_btn_manager", use_container_width=True):
+        for k in ("logged_in", "username", "role", "current_user"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 
 if __name__ == "__main__":
