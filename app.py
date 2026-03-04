@@ -4073,6 +4073,83 @@ def show_monitor_3d_page() -> None:
         else:
             st.info("לא בוצעו שינויים בשמירה.")
 
+    # --- תרשים גאנט וטבלת משימות ---
+    st.divider()
+    st.subheader("תרשים גאנט וטבלת משימות")
+    tasks_rows_raw = read_tasks()
+    TASK_EXCLUDED_STATUSES = ("הסתיים", "בוטל")
+    task_excluded_lower = [s.strip().lower() for s in TASK_EXCLUDED_STATUSES]
+    active_tasks = [
+        t for t in tasks_rows_raw
+        if (t.get("Status") or "").strip().lower() not in task_excluded_lower
+    ]
+
+    # תרשים גאנט (מעל טבלת המשימות)
+    try:
+        if active_tasks:
+            gantt_df = pd.DataFrame(active_tasks)
+            if hasattr(gantt_df.columns, 'str'):
+                gantt_df.columns = gantt_df.columns.str.strip()
+            # וידוא עמודות תאריך
+            start_col = "Start Date" if "Start Date" in gantt_df.columns else None
+            end_col = "Due Date" if "Due Date" in gantt_df.columns else None
+            if not end_col:
+                raise ValueError("חסרה עמודת תאריך יעד")
+            today_str = datetime.today().strftime("%Y-%m-%d")
+            if not start_col or start_col not in gantt_df.columns:
+                gantt_df["Start Date"] = today_str
+            # המרה ל-datetime
+            gantt_df["_start_dt"] = gantt_df.apply(
+                lambda r: _parse_task_date(str(r.get("Start Date", "") or "")) or datetime.today(),
+                axis=1
+            )
+            gantt_df["_end_dt"] = gantt_df.apply(
+                lambda r: _parse_task_date(str(r.get("Due Date", "") or "")) or datetime.today(),
+                axis=1
+            )
+            # אם תאריך סיום לפני התחלה - מתקנים לצורך התצוגה
+            mask = gantt_df["_start_dt"] > gantt_df["_end_dt"]
+            gantt_df.loc[mask, "_end_dt"] = gantt_df.loc[mask, "_start_dt"] + timedelta(days=1)
+            gantt_df = gantt_df[gantt_df["_end_dt"].notna()]
+            if gantt_df.empty:
+                raise ValueError("אין שורות תקינות לגאנט")
+            # שם לציר Y: פרויקט + משימה או שם משימה
+            if "Project" in gantt_df.columns and "Task Name" in gantt_df.columns:
+                gantt_df["_task_label"] = (gantt_df["Project"].fillna("") + " | " + gantt_df["Task Name"].fillna("")).str.strip(" |")
+            else:
+                gantt_df["_task_label"] = gantt_df.get("Task Name", pd.Series([""] * len(gantt_df))).fillna("")
+            color_col = "Assignee" if "Assignee" in gantt_df.columns else None
+            fig = px.timeline(
+                gantt_df,
+                x_start="_start_dt",
+                x_end="_end_dt",
+                y="_task_label",
+                color=color_col,
+                title="תרשים גאנט - משימות פעילות",
+            )
+            fig.update_yaxes(autorange="reversed")
+            fig.update_layout(xaxis_title="תאריך", yaxis_title="משימה")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("אין משימות פעילות להצגת תרשים גאנט.")
+    except Exception:
+        st.warning("אין מספיק נתוני תאריכים להצגת תרשים גאנט")
+
+    # טבלת משימות
+    if not active_tasks:
+        st.info("אין משימות פעילות להצגה.")
+    else:
+        df_tasks = pd.DataFrame(active_tasks, columns=TASKS_LOG_COLUMNS).reindex(columns=TASKS_LOG_COLUMNS, fill_value="").fillna("")
+        if hasattr(df_tasks.columns, 'str'):
+            df_tasks.columns = df_tasks.columns.str.strip()
+        st.data_editor(
+            df_tasks,
+            hide_index=True,
+            use_container_width=True,
+            disabled=TASKS_LOG_COLUMNS,
+            key="monitor_3d_tasks_editor",
+        )
+
 
 def show_tasks_page() -> None:
     st.title("ניהול פרויקטים ומשימות")
