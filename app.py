@@ -4150,21 +4150,25 @@ def show_monitor_3d_page() -> None:
             gantt_df = gantt_df[gantt_df["_end_dt"].notna()]
             if gantt_df.empty:
                 raise ValueError("אין שורות תקינות לגאנט")
-            # שם לציר Y: פרויקט + משימה או שם משימה
+            # שם לציר Y: פרויקט + משימה (Project+TaskName) לצורך בהירות
             if "פרויקט" in gantt_df.columns and "שם משימה" in gantt_df.columns:
                 gantt_df["_task_label"] = (gantt_df["פרויקט"].fillna("") + " | " + gantt_df["שם משימה"].fillna("")).str.strip(" |")
             else:
                 gantt_df["_task_label"] = gantt_df.get("שם משימה", pd.Series([""] * len(gantt_df))).fillna("")
-            color_col = "הוקצה ל" if "הוקצה ל" in gantt_df.columns else None
+            # צבע לפי Assignee (הוקצה ל) - כל חבר צוות מקבל צבע ייחודי
+            color_col = "הוקצה ל" if "הוקצה ל" in gantt_df.columns else ("Assignee" if "Assignee" in gantt_df.columns else None)
+            if color_col is None:
+                gantt_df["_assignee"] = ""
+                color_col = "_assignee"
             fig = px.timeline(
                 gantt_df,
                 x_start="_start_dt",
                 x_end="_end_dt",
                 y="_task_label",
-                color=color_col if color_col else None,
+                color=color_col,
                 title="תרשים גאנט - משימות פעילות",
             )
-            fig.update_yaxes(autorange="reversed")
+            fig.update_yaxes(autorange="reversed")  # משימות חדשות בראש
             fig.update_layout(xaxis_title="תאריך", yaxis_title="משימה")
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -4274,6 +4278,7 @@ def show_tasks_page() -> None:
                 }
                 existing.append(row)
                 write_tasks(existing, skip_rerun=True)
+                # Force fresh data fetch after saving to Google Sheet
                 st.cache_data.clear()
                 st.success("המשימה הוקצתה בהצלחה! ✅")
                 time.sleep(1)
@@ -4318,7 +4323,9 @@ def show_tasks_page() -> None:
                         and t.get("תאריך יעד") == task.get("תאריך יעד")):
                     t["סטטוס"] = "הסתיים"
                     break
-            write_tasks(tasks_rows_monitor)
+            write_tasks(tasks_rows_monitor, skip_rerun=True)
+            st.cache_data.clear()  # Ensure monitor pulls fresh data from Google Sheets
+            time.sleep(1)
             st.rerun()
 
         team_list = [n for n in TEAM_DISPLAY_NAMES if n and str(n).strip()]
