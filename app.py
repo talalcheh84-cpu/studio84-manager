@@ -4341,8 +4341,10 @@ def show_tasks_page() -> None:
                         "Flexible": "1" if is_flexible else "0",
                     }
                     existing.append(row)
-                    write_tasks(existing)
+                    write_tasks(existing, skip_rerun=True)
+                    st.cache_data.clear()
                     st.success("המשימה נוספה בהצלחה!")
+                    time.sleep(1)
                     st.rerun()
 
         st.divider()
@@ -4505,8 +4507,11 @@ def show_tasks_page() -> None:
                             if tid in edited_by_id:
                                 full_rows[i] = edited_by_id[tid]
                         updated = full_rows
-                    write_tasks(updated)
+                    write_tasks(updated, skip_rerun=True)
+                    st.cache_data.clear()
                     st.success("השינויים נשמרו בהצלחה!")
+                    time.sleep(1)
+                    st.rerun()
 
                 # כפתור מחיקה מרובה
                 if st.button("מחק משימות שסומנו 🚨", type="primary", key="delete_tasks_btn"):
