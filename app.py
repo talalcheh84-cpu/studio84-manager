@@ -4084,6 +4084,25 @@ def show_monitor_3d_page() -> None:
         if (t.get("Status") or "").strip().lower() not in task_excluded_lower
     ]
 
+    # סינון לפי משתמש מחובר (מנהל רואה הכל, עובד רואה רק את משימותיו)
+    if st.session_state.get("role") != "manager":
+        username = (st.session_state.get("username") or st.session_state.get("current_user") or "").strip()
+        df_filter = pd.DataFrame(active_tasks)
+        if hasattr(df_filter.columns, "str"):
+            df_filter.columns = df_filter.columns.str.strip()
+        col_for_filter = "Assignee" if "Assignee" in df_filter.columns else ("הוקצה ל:" if "הוקצה ל:" in df_filter.columns else None)
+        if col_for_filter is not None and username:
+            df_filter = df_filter[
+                df_filter[col_for_filter].astype(str).str.lower().str.contains(username.lower(), na=False)
+            ]
+            active_tasks = df_filter.to_dict(orient="records")
+        else:
+            active_tasks = []
+
+    if not active_tasks:
+        st.info("אין לך משימות פתוחות כרגע! 🎉")
+        return
+
     # תרשים גאנט (מעל טבלת המשימות)
     try:
         if active_tasks:
@@ -4118,7 +4137,7 @@ def show_monitor_3d_page() -> None:
                 gantt_df["_task_label"] = (gantt_df["Project"].fillna("") + " | " + gantt_df["Task Name"].fillna("")).str.strip(" |")
             else:
                 gantt_df["_task_label"] = gantt_df.get("Task Name", pd.Series([""] * len(gantt_df))).fillna("")
-            color_col = "Assignee" if "Assignee" in gantt_df.columns else None
+            color_col = "Assignee" if "Assignee" in gantt_df.columns else ("הוקצה ל:" if "הוקצה ל:" in gantt_df.columns else None)
             fig = px.timeline(
                 gantt_df,
                 x_start="_start_dt",
@@ -4135,20 +4154,17 @@ def show_monitor_3d_page() -> None:
     except Exception:
         st.warning("אין מספיק נתוני תאריכים להצגת תרשים גאנט")
 
-    # טבלת משימות
-    if not active_tasks:
-        st.info("אין משימות פעילות להצגה.")
-    else:
-        df_tasks = pd.DataFrame(active_tasks, columns=TASKS_LOG_COLUMNS).reindex(columns=TASKS_LOG_COLUMNS, fill_value="").fillna("")
-        if hasattr(df_tasks.columns, 'str'):
-            df_tasks.columns = df_tasks.columns.str.strip()
-        st.data_editor(
-            df_tasks,
-            hide_index=True,
-            use_container_width=True,
-            disabled=TASKS_LOG_COLUMNS,
-            key="monitor_3d_tasks_editor",
-        )
+    # טבלת משימות (active_tasks לא ריק - הגענו לכאן רק אחרי סינון מוצלח)
+    df_tasks = pd.DataFrame(active_tasks, columns=TASKS_LOG_COLUMNS).reindex(columns=TASKS_LOG_COLUMNS, fill_value="").fillna("")
+    if hasattr(df_tasks.columns, 'str'):
+        df_tasks.columns = df_tasks.columns.str.strip()
+    st.data_editor(
+        df_tasks,
+        hide_index=True,
+        use_container_width=True,
+        disabled=TASKS_LOG_COLUMNS,
+        key="monitor_3d_tasks_editor",
+    )
 
 
 def show_tasks_page() -> None:
