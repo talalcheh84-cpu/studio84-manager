@@ -4161,13 +4161,67 @@ def show_monitor_3d_page() -> None:
     df_tasks = pd.DataFrame(active_tasks, columns=TASKS_LOG_COLUMNS).reindex(columns=TASKS_LOG_COLUMNS, fill_value="").fillna("")
     if hasattr(df_tasks.columns, 'str'):
         df_tasks.columns = df_tasks.columns.str.strip()
+
+    # מיפוי Task ID -> שורה בגיליון (לעדכון תא בודד)
+    task_status_options = ['ממתין', 'בעבודה', 'הסתיים']
+    existing_statuses = [s for s in df_tasks["Status"].unique() if s and str(s).strip()]
+    status_options = list(dict.fromkeys(task_status_options + existing_statuses))
+    disabled_cols = [c for c in TASKS_LOG_COLUMNS if c != "Status"]
+    task_id_to_sheet_row = {}
+    if tasks_rows_raw:
+        for i, r in enumerate(tasks_rows_raw):
+            tid = str(r.get("Task ID", "") or "").strip()
+            if tid:
+                task_id_to_sheet_row[tid] = 2 + i  # שורה 1=כותרת, שורה 2+=נתונים (1-based)
+
     st.data_editor(
         df_tasks,
         hide_index=True,
         use_container_width=True,
-        disabled=TASKS_LOG_COLUMNS,
-        key="monitor_3d_tasks_editor",
+        key="task_editor",
+        disabled=disabled_cols,
+        column_config={
+            "Status": st.column_config.SelectboxColumn(
+                "סטטוס",
+                options=status_options,
+                required=True,
+            ),
+        },
     )
+
+    if st.button("שמור עדכוני סטטוס 💾", type="primary", key="save_task_status_btn", use_container_width=True):
+        edited = st.session_state.get("task_editor", {}).get("edited_rows", {})
+        if not edited:
+            st.info("לא בוצעו שינויים בשמירה.")
+        elif spreadsheet is None:
+            st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
+        else:
+            _ensure_sheet("tasks", TASKS_LOG_COLUMNS)
+            worksheet = spreadsheet.worksheet("tasks")
+            status_col_idx = TASKS_LOG_COLUMNS.index("Status") + 1  # 1-based לגספרד
+            any_completed = False
+            for row_idx, changes in edited.items():
+                new_status = (changes.get("Status") or "").strip()
+                if not new_status:
+                    continue
+                if new_status == "הסתיים":
+                    any_completed = True
+                try:
+                    display_row = df_tasks.iloc[int(row_idx)]
+                    task_id = str(display_row.get("Task ID", "") or "").strip()
+                    sheet_row = task_id_to_sheet_row.get(task_id)
+                    if sheet_row is not None:
+                        worksheet.update_cell(sheet_row, status_col_idx, new_status)
+                except Exception as e:
+                    st.warning(f"שגיאה בעדכון שורה {row_idx}: {e}")
+            st.cache_data.clear()
+            st.success("הסטטוס עודכן בהצלחה!")
+            if any_completed:
+                st.balloons()
+            if "task_editor" in st.session_state:
+                del st.session_state["task_editor"]
+            time.sleep(1)
+            st.rerun()
 
 
 def show_tasks_page() -> None:
