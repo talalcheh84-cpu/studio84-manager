@@ -4160,12 +4160,15 @@ def show_monitor_3d_page() -> None:
             if color_col is None:
                 gantt_df["_assignee"] = ""
                 color_col = "_assignee"
+            # מילוי ערכים ריקים כדי שהצבעים יופיעו (Plotly דורש ערכים לא-ריקים להבחנה)
+            gantt_df[color_col] = gantt_df[color_col].fillna("").astype(str).replace("nan", "(ללא)")
             fig = px.timeline(
                 gantt_df,
                 x_start="_start_dt",
                 x_end="_end_dt",
                 y="_task_label",
                 color=color_col,
+                text=color_col,
                 title="תרשים גאנט - משימות פעילות",
             )
             fig.update_yaxes(autorange="reversed")  # משימות חדשות בראש
