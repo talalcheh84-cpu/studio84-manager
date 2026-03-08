@@ -4087,15 +4087,18 @@ def show_monitor_3d_page() -> None:
     # סינון לפי משתמש מחובר (מנהל רואה הכל, עובד רואה רק את משימותיו)
     if st.session_state.get("role") != "manager":
         username = (st.session_state.get("username") or st.session_state.get("current_user") or "").strip()
+        # מיפוי שמות מדויק מעברית לאנגלית לחיפוש בעמודת ההקצאה
+        name_mapping = {'tali': 'טלי', 'eran': 'ערן', 'or': 'אור', 'maya': 'מיה', 'george': "ג'ורג'", 'achiad': 'אחיעד'}
+        search_name = name_mapping.get(username.lower(), username) if username else username
         df_filter = pd.DataFrame(active_tasks)
         if hasattr(df_filter.columns, "str"):
             df_filter.columns = df_filter.columns.str.strip()
         col_for_filter = "Assignee" if "Assignee" in df_filter.columns else ("הוקצה ל:" if "הוקצה ל:" in df_filter.columns else None)
         if col_for_filter is not None and username:
             df_filter = df_filter[
-                df_filter[col_for_filter].astype(str).str.lower().str.contains(username.lower(), na=False)
+                df_filter[col_for_filter].astype(str).str.contains(search_name, case=False, na=False)
             ]
-            active_tasks = df_filter.to_dict(orient="records")
+            active_tasks = df_filter.to_dict(orient="records") if not df_filter.empty else []
         else:
             active_tasks = []
 
