@@ -1274,19 +1274,25 @@ def write_projects(rows: list[dict], skip_rerun: bool = False) -> None:
 
 @st.cache_data(ttl=60)
 def read_tasks() -> list[dict]:
-    """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board)."""
+    """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board). כולל Retry ו-time.sleep למניעת 429."""
     if spreadsheet is None:
         return []
     _ensure_sheet('tasks', TASKS_LOG_COLUMNS)
-    try:
-        worksheet = spreadsheet.worksheet('tasks')
-        df = _read_worksheet_safe(worksheet, TASKS_LOG_COLUMNS)
-        if not df.empty and hasattr(df.columns, 'str'):
-            df.columns = df.columns.str.strip()
-        return df.to_dict(orient='records')
-    except Exception as e:
-        st.warning(f"שגיאה בקריאת tasks: {e}")
-        return []
+    max_retries = 3
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            worksheet = spreadsheet.worksheet('tasks')
+            df = _read_worksheet_safe(worksheet, TASKS_LOG_COLUMNS)
+            if not df.empty and hasattr(df.columns, 'str'):
+                df.columns = df.columns.str.strip()
+            return df.to_dict(orient='records')
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(1)
+    st.warning(f"שגיאה בקריאת tasks: {last_error}")
+    return []
 
 
 def write_tasks(rows: list[dict], skip_rerun: bool = False) -> None:
@@ -4229,82 +4235,46 @@ def show_tasks_page() -> None:
 
     sub_nav = st.radio(
         "בחר תצוגה:",
-        ["טבלת פרויקטים", "רשימת משימות (Task Board)", "הקצאת משימות לצוות 🎯", "לוח עומסים מנהלים (גאנט)"],
+        ["הקצאת משימה חדשה 🎯", "מוניטור צוות (עדכון סטטוסים) 📋", "לוח עומסים (גאנט ויומן) 📊"],
         horizontal=True,
     )
 
-    if sub_nav == "טבלת פרויקטים":
-        st.subheader("טבלת פרויקטים")
-        projects_rows = read_projects()
-        if not projects_rows:
-            st.info("אין פרויקטים. פתח פרויקט מתוך הצעה מאושרת בלשונית ניהול הצעות.")
+    if sub_nav == "הקצאת משימה חדשה 🎯":
+        st.subheader("הקצאת משימה חדשה לצוות")
+        projects_options = _get_active_projects_options()
+        if not projects_options:
+            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
         else:
-            df_projects = pd.DataFrame(projects_rows, columns=PROJECTS_DB_COLUMNS)
-            df_projects = df_projects.fillna('')
-            if df_projects.empty:
-                st.info("אין פרויקטים להצגה.")
-            else:
-                try:
-                    edited_projects = st.data_editor(
-                        df_projects,
-                        hide_index=True,
-                        use_container_width=True,
-                        disabled=[c for c in PROJECTS_DB_COLUMNS if c not in ("Status", "Manager", "Team")],
-                        column_config={
-                            "Status": st.column_config.SelectboxColumn(
-                                "סטטוס",
-                                options=ALLOWED_PROJECT_STATUSES,
-                                required=True,
-                            ),
-                            "Manager": st.column_config.SelectboxColumn(
-                                "מנהל",
-                                options=PROJECT_MANAGERS,
-                            ),
-                            "Team": st.column_config.SelectboxColumn(
-                                "צוות",
-                                options=PROJECT_TEAM_MEMBERS,
-                            ),
-                            'היקף כספי (₪)': st.column_config.NumberColumn(
-                                "היקף כספי (₪)",
-                                format="₪%d",
-                                default=0,
-                            ),
-                            "Dropbox_Main": st.column_config.LinkColumn(
-                                "דרופבוקס - ראשי",
-                                display_text="תיקייה ראשית",
-                            ),
-                            "Dropbox_Upload": st.column_config.LinkColumn(
-                                "דרופבוקס - העלאה",
-                                display_text="בקשת קבצים",
-                            ),
-                            "Dropbox_Deliverables": st.column_config.LinkColumn(
-                                "דרופבוקס - תוצרים",
-                                display_text="תוצרים",
-                            ),
-                        },
-                        key="projects_editor",
-                    )
-                except Exception as e:
-                    st.error(f"שגיאה בהצגת נתונים: {e}")
-                    edited_projects = df_projects
-                if st.button("שמור שינויים בפרויקטים", type="primary", key="save_projects_btn"):
-                    if is_admin():
-                        updated = edited_projects.to_dict(orient="records")
-                    else:
-                        # משתמש לא-מנהל: מיזוג השינויים חזרה לרשימה המלאה
-                        full_rows = read_projects()
-                        edited_records = edited_projects.to_dict(orient="records")
-                        edited_by_key = {(str(r.get("Client", "")), str(r.get("Project Name", ""))): r for r in edited_records}
-                        for i, row in enumerate(full_rows):
-                            key = (str(row.get("Client", "")), str(row.get("Project Name", "")))
-                            if key in edited_by_key:
-                                full_rows[i] = edited_by_key[key]
-                        updated = full_rows
-                    write_projects(updated)
-                    st.success("השינויים נשמרו בהצלחה!")
-                    st.rerun()
+            with st.form("assign_task_form", clear_on_submit=True):
+                selected_project = st.selectbox("פרויקט", options=projects_options, key="assign_task_project")
+                task_type = st.selectbox("סוג משימה", options=TASK_TYPE_OPTIONS, key="assign_task_type")
+                assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
+                due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
+                submitted = st.form_submit_button("הקצה משימה 🚀")
 
-    elif sub_nav == "רשימת משימות (Task Board)":
+            if submitted:
+                existing = read_tasks()
+                task_id = next_task_id(existing)
+                row = {
+                    "Task ID": str(task_id),
+                    "Project": selected_project,
+                    "Assignee": assignee,
+                    "Task Name": task_type,
+                    "Start Date": date.today().strftime("%d/%m/%Y"),
+                    "Due Date": due_date.strftime("%d/%m/%Y"),
+                    "Status": "To Do",
+                    "Priority": "רגיל",
+                    "Notes": "",
+                    "Flexible": "0",
+                }
+                existing.append(row)
+                write_tasks(existing, skip_rerun=True)
+                st.cache_data.clear()
+                st.success("המשימה הוקצתה בהצלחה! ✅")
+                time.sleep(1)
+                st.rerun()
+
+    elif sub_nav == "מוניטור צוות (עדכון סטטוסים) 📋":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
         st.subheader("🎯 מוניטור סטודיו - תמונת מצב צוותית")
 
@@ -4375,56 +4345,10 @@ def show_tasks_page() -> None:
                 st.error(f"שגיאה בהצגת נתונים: {e}")
 
         st.divider()
-        st.subheader("הוספת משימה")
-        projects_options = _get_active_projects_options()
-        if not projects_options:
-            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
-        else:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                selected_project = st.selectbox("פרויקט", options=projects_options, key="task_project")
-                assignee = st.selectbox("אחראי", options=TEAM_DISPLAY_NAMES, key="task_assignee")
-            with col2:
-                task_name = st.text_input("שם המשימה", key="task_name")
-                start_date = st.date_input("תאריך התחלה", value=date.today(), key="task_start")
-                due_date = st.date_input("תאריך סיום", value=date.today(), key="task_due")
-                is_flexible = st.checkbox("דדליין גמיש (ניתן לדחייה בעת עומס)", key="task_flexible")
-            with col3:
-                priority = st.selectbox("עדיפות", options=TASK_PRIORITIES, key="task_priority")
-                add_btn = st.button("הוסף משימה", type="primary", key="add_task_btn")
-
-            if add_btn:
-                if not task_name.strip():
-                    st.warning("נא להזין שם משימה.")
-                elif not selected_project:
-                    st.warning("נא לבחור פרויקט.")
-                else:
-                    existing = read_tasks()
-                    task_id = next_task_id(existing)
-                    row = {
-                        "Task ID": str(task_id),
-                        "Project": selected_project,
-                        "Assignee": assignee,
-                        "Task Name": task_name.strip(),
-                        "Start Date": start_date.strftime("%d/%m/%Y"),
-                        "Due Date": due_date.strftime("%d/%m/%Y"),
-                        "Status": "To Do",
-                        "Priority": priority,
-                        "Notes": "",
-                        "Flexible": "1" if is_flexible else "0",
-                    }
-                    existing.append(row)
-                    write_tasks(existing, skip_rerun=True)
-                    st.cache_data.clear()
-                    st.success("המשימה נוספה בהצלחה!")
-                    time.sleep(1)
-                    st.rerun()
-
-        st.divider()
         with st.expander("🗑️ ניקוי ומחיקת פרויקטים מהמערכת"):
             delete_options = _get_active_projects_options()
             if not delete_options:
-                st.info("אין פרויקטים פעילים למחיקה. הרשימה זהה לרשימת 'הוספת משימה'.")
+                st.info("אין פרויקטים פעילים למחיקה.")
             else:
                 project_to_delete = st.selectbox(
                     "בחר פרויקט למחיקה",
@@ -4505,7 +4429,7 @@ def show_tasks_page() -> None:
         st.subheader("טבלת משימות")
         tasks_rows = read_tasks()
         if not tasks_rows:
-            st.info("אין משימות. הוסף משימה חדשה למעלה.")
+            st.info("אין משימות. השתמש בטאב 'הקצאת משימה חדשה' להוספת משימות.")
         else:
             # סינון חכם: סטטוס לא בוצע, תאריך <= היום. מיון: באיחור ראשון, אחר כך היום.
             filtered_rows = _filter_tasks_by_status_and_date(
@@ -4698,42 +4622,7 @@ def show_tasks_page() -> None:
         else:
             st.info("אין פרויקטים פעילים. הוסף פרויקטים כדי לנהל אנשי קשר.")
 
-    elif sub_nav == "הקצאת משימות לצוות 🎯":
-        st.subheader("הקצאת משימה חדשה לצוות")
-        projects_options = _get_active_projects_options()
-        if not projects_options:
-            st.info("אין פרויקטים פעילים. הוסף פרויקטים בגיליון projects עם סטטוס 'בעבודה' או 'ממתין להתחלה'.")
-        else:
-            with st.form("assign_task_form", clear_on_submit=True):
-                selected_project = st.selectbox("פרויקט", options=projects_options, key="assign_task_project")
-                task_type = st.selectbox("סוג משימה", options=TASK_TYPE_OPTIONS, key="assign_task_type")
-                assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
-                due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
-                submitted = st.form_submit_button("הקצה משימה 🚀")
-
-            if submitted:
-                existing = read_tasks()
-                task_id = next_task_id(existing)
-                row = {
-                    "Task ID": str(task_id),
-                    "Project": selected_project,
-                    "Assignee": assignee,
-                    "Task Name": task_type,
-                    "Start Date": date.today().strftime("%d/%m/%Y"),
-                    "Due Date": due_date.strftime("%d/%m/%Y"),
-                    "Status": "To Do",
-                    "Priority": "רגיל",
-                    "Notes": "",
-                    "Flexible": "0",
-                }
-                existing.append(row)
-                write_tasks(existing, skip_rerun=True)
-                st.cache_data.clear()
-                st.success("המשימה הוקצתה בהצלחה! ✅")
-                time.sleep(1)
-                st.rerun()
-
-    elif sub_nav == "לוח עומסים מנהלים (גאנט)":
+    elif sub_nav == "לוח עומסים (גאנט ויומן) 📊":
         st.subheader("לוח עומסים צוותי - לוח שנה אינטראקטיבי")
         calendar_events = []
 
