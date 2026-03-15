@@ -1014,14 +1014,19 @@ def send_kickoff_email(
 ) -> bool:
     """
     שולח מייל התנעת פרויקט לצוות עם לינקים ישירים לתיקיות הדרופבוקס.
-    משתמש ב-st.secrets: EMAIL_SENDER, EMAIL_PASSWORD, TEAM_EMAIL.
+    משתמש ב-st.secrets['email']: smtp_server, smtp_port, sender_email, password.
+    תומך ב-Webmail (SMTP פרטי) עם פורט 465 (SSL) או 587 (STARTTLS).
     מחזיר True אם השליחה הצליחה, False אחרת.
     """
     try:
-        sender = st.secrets.get("EMAIL_SENDER", "").strip()
-        password = st.secrets.get("EMAIL_PASSWORD", "").strip()
-        recipient = st.secrets.get("TEAM_EMAIL", "").strip()
-        if not sender or not password or not recipient:
+        email_config = st.secrets.get("email", {}) or {}
+        smtp_server = (email_config.get("smtp_server") or "").strip()
+        smtp_port = int(email_config.get("smtp_port", 465))
+        sender_email = (email_config.get("sender_email") or "").strip()
+        password = (email_config.get("password") or "").strip()
+        recipient = (email_config.get("recipient") or st.secrets.get("TEAM_EMAIL", "") or "").strip()
+        if not smtp_server or not sender_email or not password or not recipient:
+            st.error("חסרים נתוני אימייל ב-secrets (smtp_server, sender_email, password, recipient)")
             return False
         links_html = []
         if main_link and main_link.startswith("http"):
@@ -1050,15 +1055,100 @@ def send_kickoff_email(
 """
         msg = EmailMessage()
         msg["Subject"] = f"התנעת פרויקט: {project_name} - {client}"
-        msg["From"] = sender
+        msg["From"] = sender_email
         msg["To"] = recipient
         msg.set_content(f"פרויקט: {project_name}\nלקוח: {client}\nדדליין: {deadline_str}\n\nלינקים:\n{main_link}\n{upload_link}\n{deliverables_link}")
         msg.add_alternative(html_body, subtype="html")
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(sender, password)
-            smtp.send_message(msg)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
+                smtp.login(sender_email, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port) as smtp:
+                smtp.starttls()
+                smtp.login(sender_email, password)
+                smtp.send_message(msg)
         return True
-    except Exception:
+    except smtplib.SMTPAuthenticationError as e:
+        st.error(f"שגיאת אימות SMTP: {e}")
+        return False
+    except smtplib.SMTPConnectError as e:
+        st.error(f"שגיאת התחברות לשרת SMTP: {e}")
+        return False
+    except smtplib.SMTPException as e:
+        st.error(f"שגיאת SMTP: {e}")
+        return False
+    except Exception as e:
+        st.error(f"שגיאה בשליחת המייל: {e}")
+        return False
+
+
+def send_quote_email_via_smtp(
+    to_email: str,
+    subject: str,
+    body: str,
+    pdf_path: str | Path,
+    cc_list: list[str] | None = None,
+) -> bool:
+    """
+    שולח מייל הצעת מחיר ללקוח עם קובץ PDF מצורף.
+    משתמש ב-st.secrets['email_eran'] (או 'email' אם חסר) - smtp_server, smtp_port, sender_email, password.
+    מחזיר True אם השליחה הצליחה, False אחרת.
+    """
+    try:
+        email_eran = st.secrets.get("email_eran")
+        if isinstance(email_eran, dict):
+            email_config = email_eran
+        else:
+            email_config = st.secrets.get("email", {}) or {}
+            if isinstance(email_eran, str) and email_eran.strip():
+                email_config = dict(email_config)
+                email_config["sender_email"] = email_eran.strip()
+        smtp_server = (email_config.get("smtp_server") or "").strip()
+        smtp_port = int(email_config.get("smtp_port", 465))
+        sender_email = (email_config.get("sender_email") or "").strip()
+        password = (email_config.get("password") or "").strip()
+        if not smtp_server or not sender_email or not password:
+            st.error("חסרים נתוני אימייל ב-secrets (email_eran או email: smtp_server, sender_email, password)")
+            return False
+        to_email = (to_email or "").strip()
+        if not to_email:
+            st.error("חסרה כתובת אימייל ללקוח.")
+            return False
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            pdf_path = find_proposal_file(pdf_path.name)
+        if not pdf_path or not pdf_path.exists():
+            st.error(f"קובץ ה-PDF לא נמצא: {pdf_path}")
+            return False
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = sender_email
+        msg["To"] = to_email
+        if cc_list:
+            msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
+        msg.set_content(body)
+        recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
+        with pdf_path.open("rb") as f:
+            msg.add_attachment(f.read(), maintype="application", subtype="pdf", filename=pdf_path.name)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
+                smtp.login(sender_email, password)
+                smtp.send_message(msg, to_addrs=recipients)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port) as smtp:
+                smtp.starttls()
+                smtp.login(sender_email, password)
+                smtp.send_message(msg, to_addrs=recipients)
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        st.error(f"שגיאת אימות SMTP: {e}")
+        return False
+    except smtplib.SMTPException as e:
+        st.error(f"שגיאת SMTP: {e}")
+        return False
+    except Exception as e:
+        st.error(f"שגיאה בשליחת המייל: {e}")
         return False
 
 
@@ -2844,14 +2934,38 @@ def show_quote_page() -> None:
         except Exception as e:
             st.error(f'שגיאה מפורטת: {str(e)}')
 
-    # הצגת התוצאה מחוץ ל-if - נשארת גם אחרי לחיצה על כפתורים
-    if 'current_pdf_path' in st.session_state:
-        quotes_dir_str = st.session_state.get('current_quotes_dir', '')
-        st.success(f"הקובץ נוצר בהצלחה ונשמר ב:\n{quotes_dir_str}\n(Word + PDF)")
+    # סינכרון session state במצב עריכה - כדי שאזור התצוגה המקדימה והשליחה יוצג
+    if is_edit_mode and edit_quote_row:
+        file_path = (edit_quote_row.get("File Path") or "").strip()
+        if file_path:
+            st.session_state["current_pdf_path"] = file_path
+            docx_path_candidate = file_path.replace(".pdf", ".docx")
+            st.session_state["current_docx_path"] = docx_path_candidate
+            st.session_state["current_quotes_dir"] = str(Path(file_path).parent)
+            st.session_state["current_display_path"] = file_path
+            st.session_state["current_email_client"] = client_email or ""
+            st.session_state["current_contact_person"] = contact_person or ""
+            st.session_state["current_project_name"] = project_name or ""
+            st.session_state["current_quote_version"] = (edit_quote_row.get("Version") or "").strip() or "V1"
+            st.session_state["current_client_name"] = client_name or ""
+
+    # הצגת אזור תצוגה מקדימה ושליחה - תמיד כשנבחרה הצעה (מעריכה או מיצירה)
+    has_quote_for_preview = "current_pdf_path" in st.session_state
+    if has_quote_for_preview:
+        # עדכון פרטי המייל מהטופס הנוכחי (במצב עריכה)
+        if is_edit_mode and edit_quote_row:
+            st.session_state["current_email_client"] = client_email or ""
+            st.session_state["current_contact_person"] = contact_person or ""
+            st.session_state["current_project_name"] = project_name or ""
+            st.session_state["current_client_name"] = client_name or ""
+
+        quotes_dir_str = st.session_state.get("current_quotes_dir", "")
+        if not is_edit_mode:
+            st.success(f"הקובץ נוצר בהצלחה ונשמר ב:\n{quotes_dir_str}\n(Word + PDF)")
 
         # כפתור הורדת קובץ Word
-        docx_path_str = st.session_state.get('current_docx_path', '')
-        client_name_dl = st.session_state.get('current_client_name', 'Client')
+        docx_path_str = st.session_state.get("current_docx_path", "")
+        client_name_dl = st.session_state.get("current_client_name", "Client")
         safe_client = sanitize_filename_part(client_name_dl) if client_name_dl else "Client"
         download_filename = f"Quote_{safe_client}.docx"
         if docx_path_str:
@@ -2866,7 +2980,7 @@ def show_quote_page() -> None:
                     key="download_quote_docx_btn",
                 )
 
-        display_path_str = st.session_state.get('current_display_path', st.session_state['current_pdf_path'])
+        display_path_str = st.session_state.get("current_display_path", st.session_state["current_pdf_path"])
         target = Path(display_path_str)
         if not target.exists():
             target = find_proposal_file(target.name)
@@ -2882,35 +2996,73 @@ def show_quote_page() -> None:
                 mime=mime_type,
                 key="download_quote_btn",
             )
-
-            if st.button('📂 פתח את מיקום הקובץ', key='open_folder_button'):
+            if st.button("📂 פתח את מיקום הקובץ", key="open_folder_button"):
                 open_folder_with_selection(str(target.resolve()))
 
-            # הכנת תוכן המייל
-            project_name = st.session_state.get('current_project_name', '')
-            quote_version = st.session_state.get('current_quote_version', '')
-            contact_person = st.session_state.get('current_contact_person', '')
-            client_email = st.session_state.get('current_email_client', '')
-            email_subject = f"הצעת מחיר: {project_name} - סטודיו 84 (גרסה {quote_version})"
-            email_body = (
-                f"היי {contact_person},\n"
-                f"בהמשך לשיחתנו, מצורפת הצעת מחיר עבור פרויקט {project_name}.\n"
-                "אשמח לעמוד לרשותך לכל שאלה.\n\n"
-                "בברכה,\n"
-                "סטודיו 84"
-            )
-            cc_list = [EMAIL_ACCOUNTING, EMAIL_ERAN, EMAIL_MYSELF]
-            gmail_url = build_gmail_link(client_email, cc_list, email_subject, email_body)
-            mailto_url = build_mailto_link(client_email, cc_list, email_subject, email_body)
-            col_gmail, col_outlook = st.columns(2)
-            with col_gmail:
-                st.link_button("📧 פתח טיוטה ב-Gmail", gmail_url)
-            with col_outlook:
-                st.link_button("✉️ פתח ב-Outlook / תוכנה אחרת", mailto_url)
+        # --- אזור תצוגה מקדימה ושליחה 📨 ---
+        st.subheader("תצוגה מקדימה ושליחה 📨")
+        project_name_mail = st.session_state.get("current_project_name", "")
+        quote_version_mail = st.session_state.get("current_quote_version", "")
+        contact_person_mail = st.session_state.get("current_contact_person", "")
+        client_email_mail = st.session_state.get("current_email_client", "")
+        email_subject = f"הצעת מחיר: {project_name_mail} - סטודיו 84 (גרסה {quote_version_mail})"
+        email_body = (
+            f"היי {contact_person_mail},\n"
+            f"בהמשך לשיחתנו, מצורפת הצעת מחיר עבור פרויקט {project_name_mail}.\n"
+            "אשמח לעמוד לרשותך לכל שאלה.\n\n"
+            "בברכה,\n"
+            "סטודיו 84"
+        )
+        email_tali = st.secrets.get("email_tali", EMAIL_MYSELF)
+        email_eran_addr = st.secrets.get("email_eran", EMAIL_ERAN)
+        if isinstance(email_eran_addr, dict):
+            email_eran_addr = (email_eran_addr.get("sender_email") or EMAIL_ERAN) or ""
+        email_tali_str = str(email_tali).strip() if email_tali else EMAIL_MYSELF
+        email_eran_str = str(email_eran_addr).strip() if email_eran_addr else EMAIL_ERAN
+        cc_base = [EMAIL_ACCOUNTING]
+        st.caption("תצוגה מקדימה של המייל:")
+        st.text_area("נושא", value=email_subject, height=30, key="quote_email_preview_subject", disabled=True)
+        st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body", disabled=True)
+        send_via = st.radio(
+            "בחר שיטת שליחה",
+            ["שליחה מ-Gmail (טלי)", "שליחה מ-Webmail (ערן)"],
+            key="quote_send_via_radio",
+            horizontal=True,
+        )
+        cc_list = cc_base + [email_tali_str, email_eran_str]
+        if send_via == "שליחה מ-Gmail (טלי)":
+            gmail_url = build_gmail_link(client_email_mail, cc_list, email_subject, email_body)
+            st.link_button("שלח הצעת מחיר ללקוח 🚀", gmail_url)
+        else:
+            if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn", type="primary"):
+                if not client_email_mail or not client_email_mail.strip():
+                    st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
+                else:
+                    with st.spinner("שולח מייל..."):
+                        ok = send_quote_email_via_smtp(
+                            client_email_mail,
+                            email_subject,
+                            email_body,
+                            st.session_state["current_pdf_path"],
+                            cc_list=cc_list,
+                        )
+                    if ok:
+                        st.success("המייל נשלח בהצלחה ללקוח!")
+                        time.sleep(2)
+                        st.rerun()
 
-        if st.button('🔄 התחל הצעה חדשה', key='reset_quote_btn'):
-            for k in ['current_pdf_path', 'current_docx_path', 'current_quotes_dir', 'current_display_path',
-                      'current_email_client', 'current_contact_person', 'current_project_name', 'current_quote_version', 'current_client_name']:
+        if st.button("🔄 התחל הצעה חדשה", key="reset_quote_btn"):
+            for k in [
+                "current_pdf_path",
+                "current_docx_path",
+                "current_quotes_dir",
+                "current_display_path",
+                "current_email_client",
+                "current_contact_person",
+                "current_project_name",
+                "current_quote_version",
+                "current_client_name",
+            ]:
                 st.session_state.pop(k, None)
             st.rerun()
 
