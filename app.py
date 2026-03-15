@@ -1089,10 +1089,14 @@ def send_quote_email_via_smtp(
     body: str,
     pdf_path: str | Path,
     cc_list: list[str] | None = None,
+    file_bytes: bytes | None = None,
+    file_name: str | None = None,
 ) -> bool:
     """
-    שולח מייל הצעת מחיר ללקוח עם קובץ PDF מצורף.
+    שולח מייל הצעת מחיר ללקוח עם קובץ PDF/Word מצורף.
     משתמש ב-st.secrets['email_eran'] (או 'email' אם חסר) - smtp_server, smtp_port, sender_email, password.
+    אם מועברים file_bytes ו-file_name, משתמש בהם ישירות (מומלץ - שומר גם אחרי רענון מסך).
+    אחרת קורא את הקובץ מהנתיב pdf_path.
     מחזיר True אם השליחה הצליחה, False אחרת.
     """
     try:
@@ -1115,12 +1119,40 @@ def send_quote_email_via_smtp(
         if not to_email:
             st.error("חסרה כתובת אימייל ללקוח.")
             return False
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            pdf_path = find_proposal_file(pdf_path.name)
-        if not pdf_path or not pdf_path.exists():
-            st.error(f"קובץ ה-PDF לא נמצא: {pdf_path}")
+
+        # קבלת תוכן הקובץ לצירוף: עדיפות ל-bytes מ-session_state (שומר אחרי רענון)
+        attach_data: bytes | None = None
+        attach_filename: str = ""
+        attach_suffix: str = ""
+
+        if file_bytes and file_name:
+            attach_data = file_bytes
+            attach_filename = file_name
+            attach_suffix = (Path(file_name).suffix or "").lower()
+        else:
+            # קריאה מהדיסק: שימוש בנתיב מוחלט ובדיקה לפני הצירוף
+            path_val = Path(pdf_path).resolve() if pdf_path and str(pdf_path).strip() else None
+            searched_paths: list[str] = []
+            if path_val:
+                searched_paths.append(str(path_val))
+            if path_val and not path_val.exists():
+                path_val = find_proposal_file(path_val.name)
+                if path_val:
+                    searched_paths.append(str(path_val.resolve()))
+            if path_val and path_val.exists():
+                attach_data = path_val.read_bytes()
+                attach_filename = path_val.name
+                attach_suffix = (path_val.suffix or "").lower()
+
+        if not attach_data or not attach_filename:
+            err_msg = "קובץ לצירוף לא נמצא. ודא שההצעה נשמרה ושהקובץ זמין (או הורד אותו מחדש)."
+            if searched_paths:
+                err_msg += f"\n\nנתיבים שנבדקו:\n" + "\n".join(f"• {p}" for p in searched_paths)
+            elif pdf_path and str(pdf_path).strip():
+                err_msg += f"\n\nנתיב שנבדק: {os.path.abspath(str(pdf_path))}"
+            st.error(err_msg)
             return False
+
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = sender_email
@@ -1129,13 +1161,11 @@ def send_quote_email_via_smtp(
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
         msg.set_content(body)
         recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
-        suffix = (pdf_path.suffix or "").lower()
-        if suffix == ".docx":
+        if attach_suffix == ".docx":
             maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
         else:
             maintype, subtype = "application", "pdf"
-        with pdf_path.open("rb") as f:
-            msg.add_attachment(f.read(), maintype=maintype, subtype=subtype, filename=pdf_path.name)
+        msg.add_attachment(attach_data, maintype=maintype, subtype=subtype, filename=attach_filename)
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
                 smtp.login(sender_email, password)
@@ -2960,6 +2990,20 @@ def show_quote_page() -> None:
             st.session_state['current_dropbox_link'] = dropbox_shared_link
             st.session_state['current_quotes_dir'] = str(quotes_dir)
             st.session_state['current_display_path'] = str(display_path)
+            # שמירת תוכן הקבצים בבתים - נשמר גם אחרי רענון מסך, לצירוף למייל ולהורדה
+            try:
+                pdf_exists = full_path_pdf.exists()
+                main_bytes = full_path_pdf.read_bytes() if pdf_exists else output_path.read_bytes()
+                main_name = full_path_pdf.name if pdf_exists else output_path.name
+                st.session_state['current_file_bytes'] = main_bytes
+                st.session_state['current_file_name'] = main_name
+                st.session_state['current_file_bytes_pdf'] = main_bytes if pdf_exists else None
+                st.session_state['current_file_bytes_docx'] = output_path.read_bytes()
+            except Exception:
+                st.session_state['current_file_bytes'] = None
+                st.session_state['current_file_name'] = None
+                st.session_state['current_file_bytes_pdf'] = None
+                st.session_state['current_file_bytes_docx'] = None
             st.session_state['current_email_client'] = client_email or ""
             st.session_state['current_contact_person'] = contact_person or ""
             st.session_state['current_project_name'] = project_name or ""
@@ -2972,10 +3016,11 @@ def show_quote_page() -> None:
     if is_edit_mode and edit_quote_row:
         file_path = (edit_quote_row.get("File Path") or "").strip()
         if file_path:
-            st.session_state["current_pdf_path"] = file_path
-            docx_path_candidate = file_path.replace(".pdf", ".docx")
+            path_abs = str(Path(file_path).resolve())
+            st.session_state["current_pdf_path"] = path_abs
+            docx_path_candidate = path_abs.replace(".pdf", ".docx")
             st.session_state["current_docx_path"] = docx_path_candidate
-            st.session_state["current_file_path"] = file_path
+            st.session_state["current_file_path"] = path_abs
             st.session_state["current_dropbox_link"] = ""  # במצב עריכה אין קישור Dropbox (נוצר רק בהעלאה)
             st.session_state["current_quotes_dir"] = str(Path(file_path).parent)
             st.session_state["current_display_path"] = file_path
@@ -2984,6 +3029,28 @@ def show_quote_page() -> None:
             st.session_state["current_project_name"] = project_name or ""
             st.session_state["current_quote_version"] = (edit_quote_row.get("Version") or "").strip() or "V1"
             st.session_state["current_client_name"] = client_name or ""
+            # טעינת bytes מהקובץ במצב עריכה (אם הקובץ קיים על הדיסק)
+            try:
+                fp = Path(file_path)
+                if not fp.exists():
+                    fp = find_proposal_file(fp.name)
+                if fp and fp.exists():
+                    main_bytes = fp.read_bytes()
+                    st.session_state["current_file_bytes"] = main_bytes
+                    st.session_state["current_file_name"] = fp.name
+                    st.session_state["current_file_bytes_pdf"] = main_bytes if (fp.suffix or "").lower() == ".pdf" else None
+                    docx_p = Path(docx_path_candidate)
+                    st.session_state["current_file_bytes_docx"] = docx_p.read_bytes() if docx_p.exists() else None
+                else:
+                    st.session_state["current_file_bytes"] = None
+                    st.session_state["current_file_name"] = None
+                    st.session_state["current_file_bytes_pdf"] = None
+                    st.session_state["current_file_bytes_docx"] = None
+            except Exception:
+                st.session_state["current_file_bytes"] = None
+                st.session_state["current_file_name"] = None
+                st.session_state["current_file_bytes_pdf"] = None
+                st.session_state["current_file_bytes_docx"] = None
 
     # הצגת אזור תצוגה מקדימה ושליחה - תמיד כשנבחרה הצעה (מעריכה או מיצירה)
     has_quote_for_preview = "current_pdf_path" in st.session_state
@@ -2999,39 +3066,51 @@ def show_quote_page() -> None:
         if not is_edit_mode:
             st.success(f"הקובץ נוצר בהצלחה ונשמר ב:\n{quotes_dir_str}\n(Word + PDF)")
 
-        # כפתור הורדת קובץ Word
-        docx_path_str = st.session_state.get("current_docx_path", "")
+        # כפתורי הורדה - מיד לאחר שמירת ההצעה וההעלאה לדרופבוקס (משתמשים ב-bytes מ-session_state אם הקובץ לא על הדיסק)
         client_name_dl = st.session_state.get("current_client_name", "Client")
         safe_client = sanitize_filename_part(client_name_dl) if client_name_dl else "Client"
-        download_filename = f"Quote_{safe_client}.docx"
-        if docx_path_str:
-            docx_path = Path(docx_path_str)
-            if docx_path.exists():
-                docx_bytes = io.BytesIO(docx_path.read_bytes())
-                st.download_button(
-                    label="הורדת קובץ Word",
-                    data=docx_bytes.getvalue(),
-                    file_name=download_filename,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key="download_quote_docx_btn",
-                )
 
-        display_path_str = st.session_state.get("current_display_path", st.session_state["current_pdf_path"])
-        target = Path(display_path_str)
-        if not target.exists():
-            target = find_proposal_file(target.name)
-        if target and target.exists():
-            file_bytes = target.read_bytes()
-            mime_type = "application/pdf" if target.suffix.lower() == ".pdf" else (
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+        # כפתור הורדת קובץ Word
+        docx_bytes_data = st.session_state.get("current_file_bytes_docx")
+        if not docx_bytes_data:
+            docx_path_str = st.session_state.get("current_docx_path", "")
+            if docx_path_str:
+                docx_path = Path(docx_path_str)
+                if docx_path.exists():
+                    docx_bytes_data = docx_path.read_bytes()
+        if docx_bytes_data:
             st.download_button(
-                label="הורדת הקובץ PDF",
-                data=file_bytes,
-                file_name=target.name,
-                mime=mime_type,
+                label="📥 הורדת קובץ Word",
+                data=docx_bytes_data,
+                file_name=f"Quote_{safe_client}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="download_quote_docx_btn",
+            )
+
+        # כפתור הורדת קובץ PDF
+        pdf_bytes_data = st.session_state.get("current_file_bytes_pdf")
+        if not pdf_bytes_data:
+            display_path_str = st.session_state.get("current_display_path", st.session_state.get("current_pdf_path", ""))
+            target = Path(display_path_str) if display_path_str else None
+            if target and not target.exists():
+                target = find_proposal_file(target.name) if target else None
+            if target and target.exists():
+                pdf_bytes_data = target.read_bytes()
+        if pdf_bytes_data:
+            st.download_button(
+                label="📥 הורדת קובץ PDF",
+                data=pdf_bytes_data,
+                file_name=f"Quote_{safe_client}.pdf",
+                mime="application/pdf",
                 key="download_quote_btn",
             )
+
+        # כפתור פתיחת מיקום הקובץ (רק אם הקובץ קיים על הדיסק)
+        display_path_str = st.session_state.get("current_display_path", st.session_state.get("current_pdf_path", ""))
+        target = Path(display_path_str) if display_path_str else None
+        if target and not target.exists():
+            target = find_proposal_file(target.name) if target else None
+        if target and target.exists():
             if st.button("📂 פתח את מיקום הקובץ", key="open_folder_button"):
                 open_folder_with_selection(str(target.resolve()))
 
@@ -3061,14 +3140,16 @@ def show_quote_page() -> None:
         email_tali_str = str(email_tali).strip() if email_tali else EMAIL_MYSELF
         email_eran_str = str(email_eran_addr).strip() if email_eran_addr else EMAIL_ERAN
         cc_base = [EMAIL_ACCOUNTING]
-        # חיווי שהקובץ מצורף ומוכן לשליחה
+        # חיווי שהקובץ מצורף ומוכן לשליחה (בודקים bytes מ-session_state או קובץ על הדיסק)
+        file_bytes_ready = bool(st.session_state.get("current_file_bytes")) and st.session_state.get("current_file_name")
         file_path_for_mail = st.session_state.get("current_file_path", st.session_state.get("current_pdf_path", ""))
         path_to_check = Path(file_path_for_mail) if file_path_for_mail else None
-        file_ready = path_to_check and (path_to_check.exists() or find_proposal_file(path_to_check.name))
+        path_ready = path_to_check and (path_to_check.exists() or (find_proposal_file(path_to_check.name) is not None))
+        file_ready = file_bytes_ready or path_ready
         if file_ready:
             st.success("📎 הקובץ מצורף ומוכן לשליחה ללקוח")
         else:
-            st.warning("⚠️ הקובץ לצירוף לא נמצא – ודא שהנתיב תקין")
+            st.warning("⚠️ הקובץ לצירוף לא נמצא – ודא שההצעה נשמרה או הורד את הקובץ מחדש")
         st.caption("תצוגה מקדימה של המייל:")
         st.text_area("נושא", value=email_subject, height=30, key="quote_email_preview_subject", disabled=True)
         st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body", disabled=True)
@@ -3090,12 +3171,16 @@ def show_quote_page() -> None:
                 else:
                     with st.spinner("שולח מייל..."):
                         file_to_attach = st.session_state.get("current_file_path", st.session_state.get("current_pdf_path", ""))
+                        file_bytes = st.session_state.get("current_file_bytes")
+                        file_name = st.session_state.get("current_file_name")
                         ok = send_quote_email_via_smtp(
                             client_email_mail,
                             email_subject,
                             email_body,
                             file_to_attach,
                             cc_list=cc_list,
+                            file_bytes=file_bytes,
+                            file_name=file_name,
                         )
                     if ok:
                         st.success("המייל נשלח בהצלחה ללקוח!")
@@ -3115,6 +3200,10 @@ def show_quote_page() -> None:
                 "current_project_name",
                 "current_quote_version",
                 "current_client_name",
+                "current_file_bytes",
+                "current_file_name",
+                "current_file_bytes_pdf",
+                "current_file_bytes_docx",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
