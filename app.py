@@ -1,3 +1,4 @@
+import base64
 import html
 import io
 import re
@@ -7,6 +8,7 @@ import time
 import shutil
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
+from email.mime.application import MIMEApplication
 from pathlib import Path
 import os
 import csv
@@ -127,6 +129,9 @@ TEMPLATE_PATH = BASE_DIR / "quote_template.docx"
 QUOTES_PENDING = QUOTES_ROOT / "Pending"
 QUOTES_APPROVED = QUOTES_ROOT / "Approved"
 QUOTES_REJECTED = QUOTES_ROOT / "Rejected"
+
+# תיקייה מקומית להצעות - שומרת את הקובץ בין שמירה לשליחת מייל (לאחר rerun של Streamlit)
+TEMP_PROPOSALS_DIR = BASE_DIR / "temp_proposals"
 
 
 MESSAGES_COLUMNS = ["Timestamp", "Sender", "Recipient", "Type", "Message"]
@@ -1091,6 +1096,7 @@ def send_quote_email_via_smtp(
     cc_list: list[str] | None = None,
     file_bytes: bytes | None = None,
     file_name: str | None = None,
+    proposal_file_path: str | Path | None = None,
 ) -> bool:
     """
     שולח מייל הצעת מחיר ללקוח עם קובץ PDF/Word מצורף.
@@ -1120,25 +1126,43 @@ def send_quote_email_via_smtp(
             st.error("חסרה כתובת אימייל ללקוח.")
             return False
 
-        # קבלת תוכן הקובץ לצירוף: עדיפות ל-bytes מ-session_state (שומר אחרי רענון)
+        # קבלת תוכן הקובץ לצירוף: עדיפות ל-pdf_bytes מ-session_state (ללא חיפוש בנתיב)
         attach_data: bytes | None = None
         attach_filename: str = ""
         attach_suffix: str = ""
+        use_mime_application: bool = False
 
-        if file_bytes and file_name:
+        if 'pdf_bytes' in st.session_state and st.session_state['pdf_bytes']:
+            attach_data = st.session_state['pdf_bytes']
+            attach_filename = "Quote.pdf"
+            attach_suffix = ".pdf"
+            use_mime_application = True
+        elif file_bytes and file_name:
             attach_data = file_bytes
             attach_filename = file_name
             attach_suffix = (Path(file_name).suffix or "").lower()
         else:
-            # קריאה מהדיסק: שימוש בנתיב מוחלט ובדיקה לפני הצירוף
-            path_val = Path(pdf_path).resolve() if pdf_path and str(pdf_path).strip() else None
+            # קריאה מהדיסק: עדיפות ל-proposal_file_path (מתקיית temp_proposals - שומר אחרי rerun)
             searched_paths: list[str] = []
-            if path_val:
-                searched_paths.append(str(path_val))
-            if path_val and not path_val.exists():
-                path_val = find_proposal_file(path_val.name)
+            path_val = None
+            if proposal_file_path and str(proposal_file_path).strip():
+                path_val = Path(proposal_file_path).resolve()
+                path_abs = os.path.abspath(str(path_val))
+                searched_paths.append(path_abs)
+                if not path_val.exists():
+                    st.error(
+                        f"הקובץ לא נמצא בנתיב השמור. הנתיב המדויק שבו חיפשתי: {path_abs}\n\n"
+                        "ודא שההצעה נשמרה לפני שליחת המייל."
+                    )
+                    return False
+            else:
+                path_val = Path(pdf_path).resolve() if pdf_path and str(pdf_path).strip() else None
                 if path_val:
-                    searched_paths.append(str(path_val.resolve()))
+                    searched_paths.append(str(path_val))
+                if path_val and not path_val.exists():
+                    path_val = find_proposal_file(path_val.name)
+                    if path_val:
+                        searched_paths.append(str(path_val.resolve()))
             if path_val and path_val.exists():
                 attach_data = path_val.read_bytes()
                 attach_filename = path_val.name
@@ -1161,11 +1185,16 @@ def send_quote_email_via_smtp(
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
         msg.set_content(body)
         recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
-        if attach_suffix == ".docx":
-            maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if use_mime_application and attach_data:
+            pdf_attachment = MIMEApplication(attach_data, _subtype='pdf')
+            pdf_attachment.add_header('Content-Disposition', 'attachment', filename='Quote.pdf')
+            msg.attach(pdf_attachment)
         else:
-            maintype, subtype = "application", "pdf"
-        msg.add_attachment(attach_data, maintype=maintype, subtype=subtype, filename=attach_filename)
+            if attach_suffix == ".docx":
+                maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
+            else:
+                maintype, subtype = "application", "pdf"
+            msg.add_attachment(attach_data, maintype=maintype, subtype=subtype, filename=attach_filename)
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
                 smtp.login(sender_email, password)
@@ -2988,22 +3017,37 @@ def show_quote_page() -> None:
             st.session_state['current_docx_path'] = str(output_path)
             st.session_state['current_file_path'] = str(full_path_pdf)  # נתיב לקובץ לצירוף למייל
             st.session_state['current_dropbox_link'] = dropbox_shared_link
+            # שמירה פיזית ב-temp_proposals כדי שהקובץ יהיה זמין אחרי rerun (לפני שליחת מייל)
+            TEMP_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+            src_file = full_path_pdf if full_path_pdf.exists() else output_path
+            temp_copy = TEMP_PROPOSALS_DIR / src_file.name
+            shutil.copy2(str(src_file), str(temp_copy))
+            st.session_state['proposal_file_path'] = os.path.abspath(str(temp_copy))
             st.session_state['current_quotes_dir'] = str(quotes_dir)
             st.session_state['current_display_path'] = str(display_path)
             # שמירת תוכן הקבצים בבתים - נשמר גם אחרי רענון מסך, לצירוף למייל ולהורדה
             try:
                 pdf_exists = full_path_pdf.exists()
+                if pdf_path.exists():
+                    with open(str(pdf_path), 'rb') as f:
+                        st.session_state['pdf_bytes'] = f.read()
+                else:
+                    st.session_state['pdf_bytes'] = None
                 main_bytes = full_path_pdf.read_bytes() if pdf_exists else output_path.read_bytes()
                 main_name = full_path_pdf.name if pdf_exists else output_path.name
                 st.session_state['current_file_bytes'] = main_bytes
                 st.session_state['current_file_name'] = main_name
                 st.session_state['current_file_bytes_pdf'] = main_bytes if pdf_exists else None
                 st.session_state['current_file_bytes_docx'] = output_path.read_bytes()
+                # שמירה ייעודית לצירוף למייל - מונע אובדן הקובץ ב-rerun (אותו משתנה שכפתור ההורדה משתמש בו)
+                st.session_state['pdf_bytes_for_email'] = main_bytes if pdf_exists else None
             except Exception:
                 st.session_state['current_file_bytes'] = None
                 st.session_state['current_file_name'] = None
                 st.session_state['current_file_bytes_pdf'] = None
                 st.session_state['current_file_bytes_docx'] = None
+                st.session_state['pdf_bytes_for_email'] = None
+                st.session_state['pdf_bytes'] = None
             st.session_state['current_email_client'] = client_email or ""
             st.session_state['current_contact_person'] = contact_person or ""
             st.session_state['current_project_name'] = project_name or ""
@@ -3017,6 +3061,17 @@ def show_quote_page() -> None:
         file_path = (edit_quote_row.get("File Path") or "").strip()
         if file_path:
             path_abs = str(Path(file_path).resolve())
+            fp = Path(file_path)
+            if not fp.exists():
+                fp = find_proposal_file(fp.name)
+            if fp and fp.exists():
+                # שמירה פיזית ב-temp_proposals כדי שהקובץ יהיה זמין אחרי rerun (לפני שליחת מייל)
+                TEMP_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+                temp_copy = TEMP_PROPOSALS_DIR / fp.name
+                shutil.copy2(str(fp), str(temp_copy))
+                st.session_state["proposal_file_path"] = os.path.abspath(str(temp_copy))
+            else:
+                st.session_state["proposal_file_path"] = path_abs  # fallback לנתיב המקורי
             st.session_state["current_pdf_path"] = path_abs
             docx_path_candidate = path_abs.replace(".pdf", ".docx")
             st.session_state["current_docx_path"] = docx_path_candidate
@@ -3041,16 +3096,23 @@ def show_quote_page() -> None:
                     st.session_state["current_file_bytes_pdf"] = main_bytes if (fp.suffix or "").lower() == ".pdf" else None
                     docx_p = Path(docx_path_candidate)
                     st.session_state["current_file_bytes_docx"] = docx_p.read_bytes() if docx_p.exists() else None
+                    # שמירה ייעודית לצירוף למייל - מונע אובדן הקובץ ב-rerun (אותו משתנה שכפתור ההורדה משתמש בו)
+                    st.session_state["pdf_bytes_for_email"] = main_bytes if (fp.suffix or "").lower() == ".pdf" else None
+                    st.session_state["pdf_bytes"] = main_bytes if (fp.suffix or "").lower() == ".pdf" else None
                 else:
                     st.session_state["current_file_bytes"] = None
                     st.session_state["current_file_name"] = None
                     st.session_state["current_file_bytes_pdf"] = None
                     st.session_state["current_file_bytes_docx"] = None
+                    st.session_state["pdf_bytes_for_email"] = None
+                    st.session_state["pdf_bytes"] = None
             except Exception:
                 st.session_state["current_file_bytes"] = None
                 st.session_state["current_file_name"] = None
                 st.session_state["current_file_bytes_pdf"] = None
                 st.session_state["current_file_bytes_docx"] = None
+                st.session_state["pdf_bytes_for_email"] = None
+                st.session_state["pdf_bytes"] = None
 
     # הצגת אזור תצוגה מקדימה ושליחה - תמיד כשנבחרה הצעה (מעריכה או מיצירה)
     has_quote_for_preview = "current_pdf_path" in st.session_state
@@ -3121,6 +3183,11 @@ def show_quote_page() -> None:
 
         # --- אזור תצוגה מקדימה ושליחה 📨 ---
         st.subheader("תצוגה מקדימה ושליחה 📨")
+        if 'pdf_bytes' in st.session_state and st.session_state['pdf_bytes']:
+            st.markdown('### תצוגה מקדימה של המסמך:')
+            base64_pdf = base64.b64encode(st.session_state['pdf_bytes']).decode('utf-8')
+            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+            st.markdown(pdf_display, unsafe_allow_html=True)
         project_name_mail = st.session_state.get("current_project_name", "")
         quote_version_mail = st.session_state.get("current_quote_version", "")
         contact_person_mail = st.session_state.get("current_contact_person", "")
@@ -3169,29 +3236,32 @@ def show_quote_page() -> None:
                 if not client_email_mail or not client_email_mail.strip():
                     st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
                 else:
-                    with st.spinner("שולח מייל..."):
-                        file_to_attach = st.session_state.get("current_file_path", st.session_state.get("current_pdf_path", ""))
-                        file_bytes = st.session_state.get("current_file_bytes")
-                        file_name = st.session_state.get("current_file_name")
-                        ok = send_quote_email_via_smtp(
-                            client_email_mail,
-                            email_subject,
-                            email_body,
-                            file_to_attach,
-                            cc_list=cc_list,
-                            file_bytes=file_bytes,
-                            file_name=file_name,
-                        )
-                    if ok:
-                        st.success("המייל נשלח בהצלחה ללקוח!")
-                        time.sleep(2)
-                        st.rerun()
+                    # שימוש ב-pdf_bytes מ-session_state - ללא קריאה מהדיסק
+                    if 'pdf_bytes' not in st.session_state or not st.session_state['pdf_bytes']:
+                        st.error("קובץ ה-PDF לצירוף לא נמצא בזיכרון. ודא שההצעה נשמרה או הורד את הקובץ מחדש.")
+                    else:
+                        with st.spinner("שולח מייל..."):
+                            ok = send_quote_email_via_smtp(
+                                client_email_mail,
+                                email_subject,
+                                email_body,
+                                pdf_path="",  # לא משתמשים בנתיב - רק ב-pdf_bytes מ-session_state
+                                cc_list=cc_list,
+                                file_bytes=None,  # הפונקציה לוקחת ישירות מ-st.session_state['pdf_bytes']
+                                file_name=None,
+                                proposal_file_path=None,
+                            )
+                        if ok:
+                            st.success("המייל נשלח בהצלחה ללקוח!")
+                            time.sleep(2)
+                            st.rerun()
 
         if st.button("🔄 התחל הצעה חדשה", key="reset_quote_btn"):
             for k in [
                 "current_pdf_path",
                 "current_docx_path",
                 "current_file_path",
+                "proposal_file_path",
                 "current_dropbox_link",
                 "current_quotes_dir",
                 "current_display_path",
@@ -3204,6 +3274,8 @@ def show_quote_page() -> None:
                 "current_file_name",
                 "current_file_bytes_pdf",
                 "current_file_bytes_docx",
+                "pdf_bytes_for_email",
+                "pdf_bytes",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
