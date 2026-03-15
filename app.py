@@ -1129,8 +1129,13 @@ def send_quote_email_via_smtp(
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
         msg.set_content(body)
         recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
+        suffix = (pdf_path.suffix or "").lower()
+        if suffix == ".docx":
+            maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
+        else:
+            maintype, subtype = "application", "pdf"
         with pdf_path.open("rb") as f:
-            msg.add_attachment(f.read(), maintype="application", subtype="pdf", filename=pdf_path.name)
+            msg.add_attachment(f.read(), maintype=maintype, subtype=subtype, filename=pdf_path.name)
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
                 smtp.login(sender_email, password)
@@ -2803,6 +2808,7 @@ def show_quote_page() -> None:
                 st.error(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
 
             # העלאת קובצי ה-Word וה-PDF לדרופבוקס (בענן אין סנכרון אוטומטי)
+            dropbox_shared_link = ""
             try:
                 dbx = dropbox.Dropbox(
                     app_key=st.secrets["DROPBOX_APP_KEY"],
@@ -2839,6 +2845,32 @@ def show_quote_page() -> None:
                     with open(str(pdf_path), "rb") as f:
                         dbx.files_upload(f.read(), dbx_quotes_path_pdf, mode=dropbox.files.WriteMode.overwrite)
                     st.success("✅ קובצי ה-Word וה-PDF נוצרו והועלו לדרופבוקס בהצלחה!")
+                else:
+                    st.success("✅ קובץ ה-Word נוצר והועלה לדרופבוקס בהצלחה!")
+                # יצירת קישור שיתוף לפתיחה בדפדפן (PDF עדיף, אחרת Word)
+                try:
+                    def _get_quote_shared_link(path: str) -> str:
+                        try:
+                            link_metadata = dbx.sharing_create_shared_link_with_settings(path)
+                            return link_metadata.url
+                        except dropbox.exceptions.ApiError as e:
+                            err = getattr(e, "error", None)
+                            if err is not None and getattr(err, "is_shared_link_already_exists", lambda: False)():
+                                meta = getattr(err, "get_shared_link_already_exists", lambda: None)()
+                                if meta and getattr(meta, "is_metadata", lambda: False)():
+                                    link_meta = meta.get_metadata()
+                                    if link_meta:
+                                        return link_meta.url
+                                try:
+                                    links_result = dbx.sharing_list_shared_links(path=path, direct_only=True)
+                                    if links_result.links:
+                                        return links_result.links[0].url
+                                except Exception:
+                                    pass
+                            return ""
+                    dropbox_shared_link = _get_quote_shared_link(dbx_quotes_path_pdf) if pdf_path.exists() else _get_quote_shared_link(dbx_quotes_path_docx)
+                except Exception:
+                    pass
             except Exception as dbx_err:
                 st.warning(f"הקובץ נוצר בהצלחה, אך העלאה לדרופבוקס נכשלה: {dbx_err}")
 
@@ -2924,6 +2956,8 @@ def show_quote_page() -> None:
             display_path = pdf_path if pdf_path.exists() else output_path
             st.session_state['current_pdf_path'] = str(full_path_pdf)
             st.session_state['current_docx_path'] = str(output_path)
+            st.session_state['current_file_path'] = str(full_path_pdf)  # נתיב לקובץ לצירוף למייל
+            st.session_state['current_dropbox_link'] = dropbox_shared_link
             st.session_state['current_quotes_dir'] = str(quotes_dir)
             st.session_state['current_display_path'] = str(display_path)
             st.session_state['current_email_client'] = client_email or ""
@@ -2941,6 +2975,8 @@ def show_quote_page() -> None:
             st.session_state["current_pdf_path"] = file_path
             docx_path_candidate = file_path.replace(".pdf", ".docx")
             st.session_state["current_docx_path"] = docx_path_candidate
+            st.session_state["current_file_path"] = file_path
+            st.session_state["current_dropbox_link"] = ""  # במצב עריכה אין קישור Dropbox (נוצר רק בהעלאה)
             st.session_state["current_quotes_dir"] = str(Path(file_path).parent)
             st.session_state["current_display_path"] = file_path
             st.session_state["current_email_client"] = client_email or ""
@@ -2999,6 +3035,11 @@ def show_quote_page() -> None:
             if st.button("📂 פתח את מיקום הקובץ", key="open_folder_button"):
                 open_folder_with_selection(str(target.resolve()))
 
+        # קישור לפתיחת המסמך בדפדפן (מקישור Dropbox)
+        dropbox_link = st.session_state.get("current_dropbox_link", "")
+        if dropbox_link and dropbox_link.startswith("http"):
+            st.link_button("📄 פתח את המסמך בדפדפן", dropbox_link, type="primary")
+
         # --- אזור תצוגה מקדימה ושליחה 📨 ---
         st.subheader("תצוגה מקדימה ושליחה 📨")
         project_name_mail = st.session_state.get("current_project_name", "")
@@ -3020,6 +3061,14 @@ def show_quote_page() -> None:
         email_tali_str = str(email_tali).strip() if email_tali else EMAIL_MYSELF
         email_eran_str = str(email_eran_addr).strip() if email_eran_addr else EMAIL_ERAN
         cc_base = [EMAIL_ACCOUNTING]
+        # חיווי שהקובץ מצורף ומוכן לשליחה
+        file_path_for_mail = st.session_state.get("current_file_path", st.session_state.get("current_pdf_path", ""))
+        path_to_check = Path(file_path_for_mail) if file_path_for_mail else None
+        file_ready = path_to_check and (path_to_check.exists() or find_proposal_file(path_to_check.name))
+        if file_ready:
+            st.success("📎 הקובץ מצורף ומוכן לשליחה ללקוח")
+        else:
+            st.warning("⚠️ הקובץ לצירוף לא נמצא – ודא שהנתיב תקין")
         st.caption("תצוגה מקדימה של המייל:")
         st.text_area("נושא", value=email_subject, height=30, key="quote_email_preview_subject", disabled=True)
         st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body", disabled=True)
@@ -3033,17 +3082,19 @@ def show_quote_page() -> None:
         if send_via == "שליחה מ-Gmail (טלי)":
             gmail_url = build_gmail_link(client_email_mail, cc_list, email_subject, email_body)
             st.link_button("שלח הצעת מחיר ללקוח 🚀", gmail_url)
+            st.caption("💡 הורד את הקובץ למעלה וצרף אותו ידנית למייל ב-Gmail")
         else:
             if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn", type="primary"):
                 if not client_email_mail or not client_email_mail.strip():
                     st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
                 else:
                     with st.spinner("שולח מייל..."):
+                        file_to_attach = st.session_state.get("current_file_path", st.session_state.get("current_pdf_path", ""))
                         ok = send_quote_email_via_smtp(
                             client_email_mail,
                             email_subject,
                             email_body,
-                            st.session_state["current_pdf_path"],
+                            file_to_attach,
                             cc_list=cc_list,
                         )
                     if ok:
@@ -3055,6 +3106,8 @@ def show_quote_page() -> None:
             for k in [
                 "current_pdf_path",
                 "current_docx_path",
+                "current_file_path",
+                "current_dropbox_link",
                 "current_quotes_dir",
                 "current_display_path",
                 "current_email_client",
