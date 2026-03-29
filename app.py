@@ -1217,13 +1217,11 @@ def send_quote_email_via_smtp(
         attach_data: bytes | None = None
         attach_filename: str = ""
         attach_suffix: str = ""
-        use_mime_application: bool = False
 
         if 'pdf_bytes' in st.session_state and st.session_state['pdf_bytes']:
             attach_data = st.session_state['pdf_bytes']
             attach_filename = "Quote.pdf"
             attach_suffix = ".pdf"
-            use_mime_application = True
         elif file_bytes and file_name:
             attach_data = file_bytes
             attach_filename = file_name
@@ -1255,6 +1253,24 @@ def send_quote_email_via_smtp(
                 attach_filename = path_val.name
                 attach_suffix = (path_val.suffix or "").lower()
 
+        # אותו מקור כמו כפתור "הורדת קובץ PDF": bytes ב-session או קריאה מנתיב תצוגה
+        if not attach_data:
+            attach_data = st.session_state.get("current_file_bytes_pdf")
+            if attach_data:
+                attach_filename = "Quote.pdf"
+                attach_suffix = ".pdf"
+        if not attach_data:
+            display_path_str = st.session_state.get(
+                "current_display_path", st.session_state.get("current_pdf_path", "")
+            )
+            target = Path(display_path_str) if display_path_str else None
+            if target and not target.exists():
+                target = find_proposal_file(target.name) if target else None
+            if target and target.exists():
+                attach_data = target.read_bytes()
+                attach_filename = "Quote.pdf"
+                attach_suffix = ".pdf"
+
         if not attach_data or not attach_filename:
             err_msg = "קובץ לצירוף לא נמצא. ודא שההצעה נשמרה ושהקובץ זמין (או הורד אותו מחדש)."
             if searched_paths:
@@ -1272,25 +1288,16 @@ def send_quote_email_via_smtp(
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
         msg.set_content(body)
         recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
-        # --- בלוק צירוף PDF מ-session_state (לפני השליחה) ---
-        if 'pdf_bytes' in st.session_state:
-            try:
-                pdf_attachment = MIMEApplication(st.session_state['pdf_bytes'], _subtype='pdf')
-                pdf_attachment.add_header('Content-Disposition', 'attachment', filename='Quote.pdf')
-                msg.attach(pdf_attachment)
-            except Exception as e:
-                st.error(f"שגיאה בצירוף הקובץ: {e}")
+        # צירוף לפני send_message: PDF עם MIMEApplication (כמו מקור כפתור ההורדה ב-attach_data)
+        if attach_suffix == ".docx":
+            maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
+            msg.add_attachment(
+                attach_data, maintype=maintype, subtype=subtype, filename=attach_filename
+            )
         else:
-            st.warning("שים לב: לא נמצא קובץ בזיכרון לצירוף. המייל יישלח ללא קובץ.")
-        # -------------------------------
-        if not ('pdf_bytes' in st.session_state and st.session_state.get('pdf_bytes')):
-            # צירוף מקובץ מהדיסק (כשאין pdf_bytes בזיכרון)
-            if attach_data and attach_filename:
-                if attach_suffix == ".docx":
-                    maintype, subtype = "application", "vnd.openxmlformats-officedocument.wordprocessingml.document"
-                else:
-                    maintype, subtype = "application", "pdf"
-                msg.add_attachment(attach_data, maintype=maintype, subtype=subtype, filename=attach_filename)
+            part = MIMEApplication(attach_data, _subtype="pdf")
+            part.add_header("Content-Disposition", "attachment", filename="Quote.pdf")
+            msg.attach(part)
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
                 smtp.login(sender_email, password)
