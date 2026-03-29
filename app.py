@@ -14,7 +14,6 @@ import os
 import csv
 import json
 import subprocess
-import platform
 from urllib.parse import quote
 
 import dropbox
@@ -194,7 +193,7 @@ def _ensure_messages_csv() -> None:
     spreadsheet.worksheet('messages')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def _read_messages_df() -> pd.DataFrame:
     """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
     if spreadsheet is None:
@@ -427,6 +426,94 @@ def _find_pdf_by_client_project(client: str, project: str) -> Path | None:
                 if safe_client in stem and safe_project in stem:
                     return Path(root) / f
     return None
+
+
+# נתיב Quotes ב-Dropbox API (תואם להעלאה ביצירת הצעה)
+DROPBOX_QUOTES_ROOT = "/Studio84/StudioManager/Quotes"
+
+
+def _normalize_quote_version_str(version_val: str) -> str:
+    v = (version_val or "").strip() or "1"
+    if not v.upper().startswith("V"):
+        v = f"V{v}"
+    return v
+
+
+def find_physical_quote_pdf(r: dict) -> Path | None:
+    """
+    מאתר קובץ PDF תחת Quotes או temp_proposals לפי שורת ההצעה:
+    נתיב File Path (אם קיים), או סריקה לפי שם לקוח/פרויקט/תאריך בשם הקובץ.
+    """
+    client = (r.get("Client") or "").strip()
+    project = (r.get("Project") or "").strip()
+    date_val = (r.get("Date") or "").strip()
+    file_path = (r.get("File Path") or "").strip()
+    version_norm = _normalize_quote_version_str((r.get("Version") or "").strip() or "1")
+
+    safe_client = sanitize_filename_part(client)
+    safe_project = sanitize_filename_part(project)
+
+    if file_path:
+        p = Path(file_path.strip())
+        if p.suffix.lower() == ".pdf" and p.is_file():
+            return p
+        pdf_name = p.name.replace(".docx", ".pdf") if p.suffix.lower() == ".docx" else p.name
+        if not pdf_name.lower().endswith(".pdf"):
+            pdf_name = f"{p.stem}.pdf"
+        extra_dir = p.parent if p.parent.exists() else None
+        found = _find_pdf_in_quotes_folders(pdf_name, extra_dir)
+        if found and found.is_file():
+            return found
+
+    if not safe_client or not safe_project:
+        return None
+
+    date_tokens: list[str] = []
+    parsed = _parse_edit_date(date_val) if date_val else None
+    if parsed:
+        date_tokens.append(parsed.strftime("%Y-%m-%d"))
+        date_tokens.append(f"{parsed.day:02d}/{parsed.month:02d}/{parsed.year}")
+        date_tokens.append(f"{parsed.day:02d}-{parsed.month:02d}-{parsed.year}")
+    if date_val:
+        s = date_val.strip()
+        if s not in date_tokens:
+            date_tokens.append(s)
+
+    def row_pdf_filename_matches(fn: str) -> bool:
+        if not fn.lower().endswith(".pdf"):
+            return False
+        if safe_client not in fn or safe_project not in fn:
+            return False
+        if date_tokens:
+            return any(tok for tok in date_tokens if tok and tok in fn)
+        return True
+
+    candidates: list[Path] = []
+    for root_dir in (QUOTES_ROOT, TEMP_PROPOSALS_DIR):
+        if not root_dir.exists():
+            continue
+        for walk_root, _, files in os.walk(root_dir):
+            for f in files:
+                if row_pdf_filename_matches(f):
+                    candidates.append(Path(walk_root) / f)
+
+    if not candidates:
+        return _find_pdf_by_client_project(client, project)
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def score(path: Path) -> int:
+        fn = path.name
+        sc = 0
+        if version_norm in fn:
+            sc += 10
+        for tok in date_tokens:
+            if tok and len(tok) >= 8 and tok in fn:
+                sc += len(tok)
+        return sc
+
+    return max(candidates, key=score)
 
 
 def _extract_year_month_from_path_or_filename(path_or_name: str, base_name: str) -> tuple[int, int]:
@@ -1242,7 +1329,7 @@ def _ensure_sheet(sheet_name: str, columns: list[str]):
         return worksheet
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def load_contacts() -> pd.DataFrame:
     """טוען אנשי קשר מגיליון contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -1277,7 +1364,7 @@ def save_contacts(df: pd.DataFrame) -> None:
         st.warning(f"שגיאה בשמירת contacts: {e}")
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_project_contacts() -> list[dict]:
     """קריאת אנשי קשר לפרויקטים מגיליון project_contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -1383,7 +1470,7 @@ _LEGACY_PROJECT_STATUS_MAP = {
 }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_projects() -> list[dict]:
     """קריאת פרויקטים מגיליון projects בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
@@ -1439,7 +1526,7 @@ _TASKS_LEGACY_COL_MAP = {
 }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_tasks() -> list[dict]:
     """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board). כולל Retry ו-time.sleep למניעת 429."""
     if spreadsheet is None:
@@ -1495,7 +1582,7 @@ def _ensure_tasks_csv_schema() -> None:
     spreadsheet.worksheet('tasks')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_daily_tasks() -> list[dict]:
     """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
     if spreadsheet is None:
@@ -1642,7 +1729,7 @@ def _ensure_projects_csv_schema() -> None:
     spreadsheet.worksheet('projects')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_projects_csv() -> list[dict]:
     """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects)."""
     if spreadsheet is None:
@@ -1799,7 +1886,7 @@ def _quote_csv_to_log_row(r: dict) -> dict:
     }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_quotes_log() -> list[dict]:
     """קריאת הצעות מגיליון quotes בגוגל שיטס - באותה צורה בטוחה כמו projects (fillna, ניקוי רווחים)."""
     rows = read_quotes_csv()
@@ -1867,7 +1954,7 @@ def _ensure_quotes_csv_schema() -> None:
     spreadsheet.worksheet('quotes')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def read_quotes_csv() -> list[dict]:
     """קריאת נתוני טופס הצעות מחיר מגוגל שיטס (גיליון quotes)."""
     if spreadsheet is None:
@@ -1914,7 +2001,7 @@ def write_quotes_csv(rows: list[dict]) -> None:
         st.warning(f"שגיאה בשמירת quotes: {e}")
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def get_quote_from_csv(client: str, project: str, version: str) -> dict | None:
     """Get full quote row from quotes (Google Sheets) by (Client, Project, Version)."""
     key = _quote_key(client, project, version)
@@ -2047,71 +2134,6 @@ def build_mailto_link(to: str, cc_list, subject: str, body: str) -> str:
         mailto += "?" + "&".join(params)
 
     return mailto
-
-
-def open_folder_in_windows(path):
-    """פותח תיקייה ב-Windows Explorer באמצעות os.startfile."""
-    try:
-        path = os.path.normpath(path)
-        if os.path.exists(path):
-            os.startfile(path)
-        else:
-            st.error(f"הנתיב לא נמצא: {path}")
-    except Exception as e:
-        st.error(f"לא ניתן לפתוח את התיקייה: {e}")
-
-
-def open_file_in_explorer(file_path: str) -> None:
-    """פותח את התיקייה ב-Windows Explorer ומסמן את הקובץ. משתמש ב-explorer /select."""
-    open_folder_with_selection(file_path)
-
-
-def open_folder_with_selection(file_path):
-    """פותח את התיקייה ב-Windows Explorer ומסמן את הקובץ. תומך בנתיבים עם רווחים."""
-    try:
-        abs_path = os.path.abspath(file_path)
-        abs_path = os.path.normpath(abs_path)
-        if not os.path.exists(abs_path):
-            st.error(f"הקובץ לא נמצא: {abs_path}")
-            return
-        # שימוש ב-f-string עם מרכאות עוטפות לנתיב - תומך בנתיבים עם רווחים
-        subprocess.Popen(f'explorer /select,"{abs_path}"', shell=True)
-    except Exception:
-        st.error("לא הצלחתי לפתוח את הקובץ. מנסה לפתוח את התיקייה בלבד...")
-        try:
-            folder = os.path.dirname(os.path.abspath(file_path))
-            os.startfile(folder)
-        except Exception:
-            st.error("שגיאה בפתיחת התיקייה.")
-
-
-def open_folder(path):
-    """Open the folder containing the file in the system file explorer."""
-    folder_path = os.path.dirname(path)
-    if platform.system() == "Windows":
-        open_folder_in_windows(folder_path)
-    elif platform.system() == "Darwin":
-        subprocess.Popen(["open", folder_path])
-    else:
-        subprocess.Popen(["xdg-open", folder_path])
-
-
-def open_file(path: str) -> None:
-    """Open a file with the default system application."""
-    file_path = (path or "").strip()
-    if not file_path:
-        raise ValueError("לא נמצא נתיב קובץ לפתיחה.")
-
-    p = Path(file_path)
-    if not p.exists():
-        raise FileNotFoundError(f"הקובץ לא נמצא: {p}")
-
-    if platform.system() == "Windows":
-        os.startfile(str(p))
-    elif platform.system() == "Darwin":
-        subprocess.Popen(["open", str(p)])
-    else:
-        subprocess.Popen(["xdg-open", str(p)])
 
 
 def build_gmail_link(to: str, cc_list, subject: str, body: str) -> str:
@@ -3176,15 +3198,6 @@ def show_quote_page() -> None:
                 key="download_quote_btn",
             )
 
-        # כפתור פתיחת מיקום הקובץ (רק אם הקובץ קיים על הדיסק)
-        display_path_str = st.session_state.get("current_display_path", st.session_state.get("current_pdf_path", ""))
-        target = Path(display_path_str) if display_path_str else None
-        if target and not target.exists():
-            target = find_proposal_file(target.name) if target else None
-        if target and target.exists():
-            if st.button("📂 פתח את מיקום הקובץ", key="open_folder_button"):
-                open_folder_with_selection(str(target.resolve()))
-
         # קישור לפתיחת המסמך בדפדפן (מקישור Dropbox)
         dropbox_link = st.session_state.get("current_dropbox_link", "")
         if dropbox_link and dropbox_link.startswith("http"):
@@ -3505,15 +3518,26 @@ def show_quotes_management_page() -> None:
                     with col_action:
                         if status_val == "Signed" and signed_path_val:
                             st.success("✅ חוזה חתום קיים")
-                            if st.button("📄 פתח קובץ", key=f"open_signed_{quote_key}"):
+                            sp_signed = Path(signed_path_val)
+                            if sp_signed.is_file():
                                 try:
-                                    if Path(signed_path_val).exists():
-                                        open_file_in_explorer(signed_path_val)
-                                        st.success("חלון Explorer נפתח עם מיקום הקובץ.")
-                                    else:
-                                        st.warning("הקובץ לא נמצא בנתיב השמור.")
-                                except Exception as e:
-                                    st.error(f"שגיאה בפתיחת הקובץ: {e}")
+                                    _sig_bytes = sp_signed.read_bytes()
+                                    _mime = (
+                                        "application/pdf"
+                                        if sp_signed.suffix.lower() == ".pdf"
+                                        else "application/octet-stream"
+                                    )
+                                    st.download_button(
+                                        label="📥 הורד חוזה חתום",
+                                        data=_sig_bytes,
+                                        file_name=sp_signed.name,
+                                        mime=_mime,
+                                        key=f"dl_signed_{quote_key}",
+                                    )
+                                except OSError:
+                                    st.warning("הקובץ לא נמצא בנתיב השמור.")
+                            else:
+                                st.warning("הקובץ לא נמצא בנתיב השמור.")
                         elif status_val in ("Approved", "Sent"):
                             uploaded_file = st.file_uploader(
                                 "📎 העלה חוזה חתום",
@@ -3804,9 +3828,10 @@ def show_quotes_management_page() -> None:
                         unsafe_allow_html=True,
                     )
 
-        # פתיחת PDF - חיפוש בכל התיקיות (Pending/Approved/Rejected) + נתיב legacy
+        # הורדת PDF — קובץ פיזי בשרת בלבד (סביבת Web)
         st.divider()
         st.subheader("פתיחת קובץ PDF")
+        st.caption("הורדת עותק PDF מהשרת אם הקובץ קיים בתיקיית המערכת (Quotes / temp_proposals).")
         options = []
         idx_to_row = {}
         for i, r in enumerate(rows):
@@ -3815,39 +3840,26 @@ def show_quotes_management_page() -> None:
             idx_to_row[i] = r
 
         selected_idx = st.selectbox(
-            "בחר הצעה לפתיחה",
+            "בחר הצעה להורדה",
             options=[i for i, _ in options],
             format_func=lambda i: dict(options).get(i, str(i)),
         )
-        open_clicked = st.button("📄 פתח PDF", help="מחפש את ה-PDF בתיקיות Pending/Approved ופותח חלון Explorer.")
-        if open_clicked:
+        r_pdf = idx_to_row.get(selected_idx, {})
+        pdf_path_dl = find_physical_quote_pdf(r_pdf)
+        if pdf_path_dl and pdf_path_dl.is_file():
             try:
-                r = idx_to_row.get(selected_idx, {})
-                client = (r.get("Client") or "").strip()
-                project = (r.get("Project") or "").strip()
-                file_path = r.get("File Path") or ""
-                found = None
-                if file_path:
-                    p = Path(file_path)
-                    pdf_name = p.name.replace(".docx", ".pdf") if p.suffix.lower() == ".docx" else p.name
-                    extra_dir = p.parent if p.parent.exists() else None
-                    found = _find_pdf_in_quotes_folders(pdf_name, extra_dir)
-                if not found and client and project:
-                    found = _find_pdf_by_client_project(client, project)
-                if found:
-                    open_file_in_explorer(str(found))
-                    st.success("חלון Explorer נפתח עם מיקום הקובץ.")
-                else:
-                    quotes_path = str(QUOTES_ROOT.resolve())
-                    if platform.system() == "Windows":
-                        subprocess.run(["explorer", quotes_path])
-                    elif platform.system() == "Darwin":
-                        subprocess.Popen(["open", quotes_path])
-                    else:
-                        subprocess.Popen(["xdg-open", quotes_path])
-                    st.info("הקובץ לא נמצא. נפתחה תיקיית Quotes לחיפוש ידני.")
-            except Exception as e:
-                st.error(f"שגיאה בפתיחת הקובץ: {e}")
+                pdf_bytes = pdf_path_dl.read_bytes()
+                st.download_button(
+                    label="📥 הורד PDF",
+                    data=pdf_bytes,
+                    file_name=pdf_path_dl.name,
+                    mime="application/pdf",
+                    key=f"quote_mgmt_dl_pdf_{selected_idx}",
+                )
+            except OSError:
+                st.error("קובץ ה-PDF הפיזי לא נמצא בתיקיית המערכת")
+        else:
+            st.error("קובץ ה-PDF הפיזי לא נמצא בתיקיית המערכת")
 
     except Exception:
         # Fallback without pandas (less control, but still works)
@@ -3950,41 +3962,35 @@ def show_quotes_management_page() -> None:
             write_quotes_log(merged_rows)
             st.success("הסטטוסים נשמרו בהצלחה.")
 
-        # --- פתיחת PDF (fallback) ---
+        # --- הורדת PDF (fallback) ---
         st.divider()
         st.subheader("פתיחת קובץ PDF")
+        st.caption("הורדת עותק PDF מהשרת אם הקובץ קיים בתיקיית המערכת (Quotes / temp_proposals).")
         options_fb = [(i, f"{r.get('Client','')} | {r.get('Project','')} | {r.get('Version','')} | {r.get('Date','')}") for i, r in enumerate(rows)]
         idx_to_label_fb = {i: lbl for i, lbl in options_fb}
         idx_to_row_fb = {i: r for i, r in enumerate(rows)}
-        selected_fb = st.selectbox("בחר הצעה לפתיחה", options=[i for i, _ in options_fb], format_func=lambda i: idx_to_label_fb.get(i, str(i)), key="open_pdf_select_fb")
-        if st.button("📄 פתח PDF", key="open_pdf_btn_fb"):
+        selected_fb = st.selectbox(
+            "בחר הצעה להורדה",
+            options=[i for i, _ in options_fb],
+            format_func=lambda i: idx_to_label_fb.get(i, str(i)),
+            key="open_pdf_select_fb",
+        )
+        r_pdf_fb = idx_to_row_fb.get(selected_fb, {})
+        pdf_path_fb = find_physical_quote_pdf(r_pdf_fb)
+        if pdf_path_fb and pdf_path_fb.is_file():
             try:
-                r = idx_to_row_fb.get(selected_fb, {})
-                client = (r.get("Client") or "").strip()
-                project = (r.get("Project") or "").strip()
-                file_path = r.get("File Path") or ""
-                found = None
-                if file_path:
-                    p = Path(file_path)
-                    pdf_name = p.name.replace(".docx", ".pdf") if p.suffix.lower() == ".docx" else p.name
-                    extra_dir = p.parent if p.parent.exists() else None
-                    found = _find_pdf_in_quotes_folders(pdf_name, extra_dir)
-                if not found and client and project:
-                    found = _find_pdf_by_client_project(client, project)
-                if found:
-                    open_file_in_explorer(str(found))
-                    st.success("חלון Explorer נפתח עם מיקום הקובץ.")
-                else:
-                    quotes_path = str(QUOTES_ROOT.resolve())
-                    if platform.system() == "Windows":
-                        subprocess.run(["explorer", quotes_path])
-                    elif platform.system() == "Darwin":
-                        subprocess.Popen(["open", quotes_path])
-                    else:
-                        subprocess.Popen(["xdg-open", quotes_path])
-                    st.info("הקובץ לא נמצא. נפתחה תיקיית Quotes לחיפוש ידני.")
-            except Exception as e:
-                st.error(f"שגיאה בפתיחת הקובץ: {e}")
+                pdf_bytes_fb = pdf_path_fb.read_bytes()
+                st.download_button(
+                    label="📥 הורד PDF",
+                    data=pdf_bytes_fb,
+                    file_name=pdf_path_fb.name,
+                    mime="application/pdf",
+                    key=f"quote_mgmt_dl_pdf_fb_{selected_fb}",
+                )
+            except OSError:
+                st.error("קובץ ה-PDF הפיזי לא נמצא בתיקיית המערכת")
+        else:
+            st.error("קובץ ה-PDF הפיזי לא נמצא בתיקיית המערכת")
 
         # --- העלאת חוזה חתום (fallback ללא pandas) ---
         st.subheader("📎 העלאת חוזה חתום (Signed Quote)")
@@ -4012,15 +4018,26 @@ def show_quotes_management_page() -> None:
                     with col_action:
                         if status_val == "Signed" and signed_path_val:
                             st.success("✅ חוזה חתום קיים")
-                            if st.button("📄 פתח קובץ", key=f"open_signed_fb_{quote_key}"):
+                            sp_signed_fb = Path(signed_path_val)
+                            if sp_signed_fb.is_file():
                                 try:
-                                    if Path(signed_path_val).exists():
-                                        open_file_in_explorer(signed_path_val)
-                                        st.success("חלון Explorer נפתח עם מיקום הקובץ.")
-                                    else:
-                                        st.warning("הקובץ לא נמצא בנתיב השמור.")
-                                except Exception as e:
-                                    st.error(f"שגיאה בפתיחת הקובץ: {e}")
+                                    _sig_b_fb = sp_signed_fb.read_bytes()
+                                    _mime_fb = (
+                                        "application/pdf"
+                                        if sp_signed_fb.suffix.lower() == ".pdf"
+                                        else "application/octet-stream"
+                                    )
+                                    st.download_button(
+                                        label="📥 הורד חוזה חתום",
+                                        data=_sig_b_fb,
+                                        file_name=sp_signed_fb.name,
+                                        mime=_mime_fb,
+                                        key=f"dl_signed_fb_{quote_key}",
+                                    )
+                                except OSError:
+                                    st.warning("הקובץ לא נמצא בנתיב השמור.")
+                            else:
+                                st.warning("הקובץ לא נמצא בנתיב השמור.")
                         elif status_val in ("Approved", "Sent"):
                             uploaded_file = st.file_uploader(
                                 "📎 העלה חוזה חתום",
@@ -5642,6 +5659,7 @@ def main() -> None:
 
     st.sidebar.title("תפריט ניהול")
     if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
+        st.cache_data.clear()  # ניקוי cache כדי לטעון נתונים עדכניים מגוגל שיטס
         st.rerun()
 
     if role == "team":
