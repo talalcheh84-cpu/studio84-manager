@@ -279,56 +279,35 @@ def _render_quick_comm_sidebar_form() -> None:
             st.rerun()
 
 
-def _render_dropbox_refresh_token_sidebar() -> None:
-    """מציג בלוק בתחתית התפריט הצד לחילוץ Refresh Token - רק כאשר DROPBOX_REFRESH_TOKEN ריק או חסר."""
-    refresh_token = st.secrets.get("DROPBOX_REFRESH_TOKEN", "")
-    if refresh_token and str(refresh_token).strip():
-        return
-    app_key = st.secrets.get("DROPBOX_APP_KEY", "")
-    app_secret = st.secrets.get("DROPBOX_APP_SECRET", "")
-    if not app_key or not app_secret:
-        st.sidebar.warning("נדרש חיבור קבוע לדרופבוקס – הגדר DROPBOX_APP_KEY ו-DROPBOX_APP_SECRET ב-Secrets.")
+def _get_dropbox_access_token() -> str | None:
+    """מחזיר Access Token לדרופבוקס מ-Secrets: DROPBOX_ACCESS_TOKEN או dropbox.access_token (או מפתחות חלופיים תחת dropbox)."""
+    try:
+        flat = st.secrets.get("DROPBOX_ACCESS_TOKEN")
+        if flat is not None and str(flat).strip():
+            return str(flat).strip()
+    except Exception:
+        pass
+    try:
+        nested = st.secrets.get("dropbox")
+        if isinstance(nested, dict):
+            for key in ("access_token", "DROPBOX_ACCESS_TOKEN", "token"):
+                v = nested.get(key)
+                if v is not None and str(v).strip():
+                    return str(v).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _render_dropbox_access_token_hint_sidebar() -> None:
+    """מציג אזהרה בתפריט הצד רק כאשר אין DROPBOX_ACCESS_TOKEN (או מקביל תחת dropbox)."""
+    if _get_dropbox_access_token():
         return
     st.sidebar.markdown("---")
-    st.sidebar.warning("נדרש חיבור קבוע לדרופבוקס")
-    auth_url = f"https://www.dropbox.com/oauth2/authorize?client_id={app_key}&token_access_type=offline&response_type=code"
-    st.sidebar.markdown(f"[1. לחץ כאן לקבלת קוד גישה לדרופבוקס]({auth_url})")
-    auth_code = st.sidebar.text_input("2. הדבק את הקוד שקיבלת כאן:", key="dropbox_auth_code")
-    if st.sidebar.button("3. הפק מפתח קבוע", key="dropbox_fetch_refresh"):
-        if not auth_code or not str(auth_code).strip():
-            st.sidebar.error("נא להדביק את קוד הגישה שקיבלת.")
-        else:
-            try:
-                r = requests.post(
-                    "https://api.dropboxapi.com/oauth2/token",
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": auth_code.strip(),
-                        "client_id": app_key,
-                        "client_secret": app_secret,
-                    },
-                )
-                # דיבאג: הצגת סטטוס ותשובה גולמית
-                st.sidebar.write(f"**Status:** {r.status_code}")
-                try:
-                    data = r.json()
-                    st.sidebar.json(data)
-                except Exception:
-                    st.sidebar.text("תשובה גולמית (לא JSON):")
-                    st.sidebar.code(r.text, language=None)
-                    data = {}
-                if data.get("error"):
-                    err_msg = data.get("error_description", data.get("error", ""))
-                    st.sidebar.error(f"שגיאה מדרופבוקס: {data.get('error')} – {err_msg}")
-                rt = data.get("refresh_token")
-                if rt:
-                    st.sidebar.success("המפתח הקבוע הופק בהצלחה. העתק אותו למטה:")
-                    st.sidebar.code(rt, language=None)
-                    st.sidebar.info("הוסף ל-Secrets: DROPBOX_REFRESH_TOKEN = \"<המפתח שהעתקת>\"")
-                elif not data.get("error"):
-                    st.sidebar.error("לא נמצא refresh_token בתשובה. ייתכן שהקוד פג תוקף – נסה שוב.")
-            except requests.RequestException as e:
-                st.sidebar.error(f"שגיאה בבקשה: {e}")
+    st.sidebar.warning(
+        "נדרש חיבור לדרופבוקס – הגדר ב-Secrets את DROPBOX_ACCESS_TOKEN "
+        "או מקטע [dropbox] עם access_token."
+    )
 
 
 def _render_quick_comm_notifications() -> None:
@@ -935,11 +914,10 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
     deliverables_folder = f"{main_folder}/02_Studio_Deliverables"
 
     try:
-        dbx = dropbox.Dropbox(
-            app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"],
-            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
-        )
+        access_token = _get_dropbox_access_token()
+        if not access_token:
+            return None
+        dbx = dropbox.Dropbox(access_token)
         try:
             dbx.users_get_current_account()
         except Exception:
@@ -1052,14 +1030,10 @@ def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = 
     clean_project_name = re.sub(r'[/\\:*?"<>|]', "_", clean_project_name) or "project"
     folder_path = f"{DROPBOX_BASE_FOLDER}/{clean_project_name}"
     try:
-        refresh_token = st.secrets.get("DROPBOX_REFRESH_TOKEN", "")
-        if not refresh_token or not str(refresh_token).strip():
+        access_token = _get_dropbox_access_token()
+        if not access_token:
             return ""
-        dbx = dropbox.Dropbox(
-            app_key=st.secrets["DROPBOX_APP_KEY"],
-            app_secret=st.secrets["DROPBOX_APP_SECRET"],
-            oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
-        )
+        dbx = dropbox.Dropbox(access_token)
         path_root = None
         if PathRoot:
             try:
@@ -3016,11 +2990,10 @@ def show_quote_page() -> None:
             # העלאת קובצי ה-Word וה-PDF לדרופבוקס (בענן אין סנכרון אוטומטי)
             dropbox_shared_link = ""
             try:
-                dbx = dropbox.Dropbox(
-                    app_key=st.secrets["DROPBOX_APP_KEY"],
-                    app_secret=st.secrets["DROPBOX_APP_SECRET"],
-                    oauth2_refresh_token=st.secrets["DROPBOX_REFRESH_TOKEN"]
-                )
+                access_token = _get_dropbox_access_token()
+                if not access_token:
+                    raise RuntimeError("אין DROPBOX_ACCESS_TOKEN ב-Secrets")
+                dbx = dropbox.Dropbox(access_token)
                 if PathRoot:
                     try:
                         ns_id = st.secrets.get("DROPBOX_NAMESPACE_ID")
@@ -5968,7 +5941,7 @@ def main() -> None:
         _render_quick_comm_sidebar_form()
         if st.sidebar.button('הצג נתונים גולמיים'):
             st.write(df_projects)
-        _render_dropbox_refresh_token_sidebar()
+        _render_dropbox_access_token_hint_sidebar()
 
         # תצוגת חתך ממוקדת (Drill-down) - במסך הראשי
         if st.session_state.monitor_filter is not None:
@@ -6038,7 +6011,7 @@ def main() -> None:
     elif main_nav == "🖥️ מוניטור צוות תלת-מימד":
         _render_quick_comm_notifications()
         _render_quick_comm_sidebar_form()
-        _render_dropbox_refresh_token_sidebar()
+        _render_dropbox_access_token_hint_sidebar()
         show_monitor_3d_page()
 
     elif main_nav == "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)":
@@ -6057,7 +6030,7 @@ def main() -> None:
         _render_quick_comm_sidebar_form()
         if st.sidebar.button('הצג נתונים גולמיים'):
             st.write(df_projects)
-        _render_dropbox_refresh_token_sidebar()
+        _render_dropbox_access_token_hint_sidebar()
 
         if page == "יצירת הצעה חדשה":
             show_quote_page()
