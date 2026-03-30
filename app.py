@@ -15,6 +15,7 @@ import os
 import csv
 import json
 import subprocess
+import uuid
 from urllib.parse import quote
 
 import dropbox
@@ -667,6 +668,63 @@ TEAM_EMAILS = {
 }
 MANAGEMENT_USERS = frozenset({"טל", "ערן"})
 
+# צבעים קבועים לגאנט (לפי מפתח TEAM_EMAILS)
+TEAM_GANTT_COLOR_HEX: dict[str, str] = {
+    "טל": "#1f77b4",  # כחול
+    "ערן": "#2ca02c",  # ירוק
+    "מיה": "#e377c2",  # ורוד
+    "ליאור": "#ff7f0e",
+    "אחיעד": "#9467bd",
+    "אור": "#17becf",
+    "ג׳ורג׳": "#8c564b",
+    "הנהלת חשבונות": "#bcbd22",
+    "(ללא אחראי)": "#7f7f7f",
+}
+
+
+def _task_team_key_for_color(task_assignee: str) -> str:
+    """מחזיר מפתח מ-TEAM_EMAILS להתאמת צבע בגאנט."""
+    for k in TEAM_EMAILS:
+        if _assignee_matches_team_key(task_assignee or "", k):
+            return k
+    return (task_assignee or "").strip() or "(ללא אחראי)"
+
+
+def _find_task_row_index_in_full_list(full_rows: list[dict], selected: dict) -> int | None:
+    """מאתר אינדקס שורה ברשימת המשימות המלאה — לפי מזהה משימה או מפתח שורה."""
+    tid = (selected.get("מזהה משימה") or "").strip()
+    if tid:
+        for i, r in enumerate(full_rows):
+            if (r.get("מזהה משימה") or "").strip() == tid:
+                return i
+        return None
+
+    def _rk(r: dict) -> tuple:
+        return (
+            str(r.get("פרויקט", "") or ""),
+            str(r.get("שם משימה", "") or ""),
+            str(r.get("הוקצה ל", "") or ""),
+            str(r.get("תאריך התחלה", "") or ""),
+            str(r.get("תאריך יעד", "") or ""),
+        )
+
+    key = _rk(selected)
+    for i, r in enumerate(full_rows):
+        if _rk(r) == key:
+            return i
+    return None
+
+
+def _ensure_task_rows_have_ids(rows: list[dict]) -> list[dict]:
+    """מבטיח שכל משימה שנשמרת לגיליון כוללת מזהה ייחודי."""
+    out: list[dict] = []
+    for r in rows:
+        rr = dict(r)
+        if not (rr.get("מזהה משימה") or "").strip():
+            rr["מזהה משימה"] = str(uuid.uuid4())
+        out.append(rr)
+    return out
+
 
 def _assignee_cell_matches_login(task_assignee: str, selected_user: str) -> bool:
     """התאמת ערך עמודת 'הוקצה ל' (איש צוות / אחראי) למשתמש הנבחר בצד."""
@@ -891,6 +949,7 @@ PROJECT_TEAM_MEMBERS = ["ג'ורג'", "מיה", "ליאור", "אור", "אחי�
 TASK_TEAM = ["ערן", "טלי", "ג'ורג'", "מיה", "ליאור", "אור", "אחיעד"]
 # עמודות משימות מסונכרנות: טופס, מוניטור, גאנט, לוח שנה
 TASKS_LOG_COLUMNS = [
+    "מזהה משימה",
     "פרויקט",
     "שם משימה",
     "תיאור המשימה",
@@ -1634,6 +1693,7 @@ _TASKS_LEGACY_COL_MAP = {
     "Project": "פרויקט", "Task Name": "שם משימה", "Assignee": "הוקצה ל",
     "Start Date": "תאריך התחלה", "Due Date": "תאריך יעד", "Status": "סטטוס",
     "Task Description": "תיאור המשימה",
+    "Task ID": "מזהה משימה",
 }
 
 
@@ -1672,6 +1732,7 @@ def write_tasks(rows: list[dict], skip_rerun: bool = False) -> None:
         st.error(f"שגיאת שמירה: {err_msg}")
         return
     _ensure_sheet('tasks', TASKS_LOG_COLUMNS)
+    rows = _ensure_task_rows_have_ids(rows)
     try:
         worksheet = spreadsheet.worksheet('tasks')
         worksheet.clear()
@@ -4845,6 +4906,63 @@ def _parse_task_date(date_str: str):
     return None
 
 
+def _build_gantt_dataframe_for_timeline(
+    active_tasks: list[dict],
+    y_axis_mode: str,
+) -> tuple[pd.DataFrame | None, str | None, str | None]:
+    """
+    מכין DataFrame ל-plotly.express.timeline.
+    y_axis_mode: 'assignee' — אחראי (מפתח צבע); 'project' — פרויקט; 'task_detail' — פרויקט | משימה.
+    מחזיר (df, y_column_name, error_message).
+    """
+    if not active_tasks:
+        return None, None, "אין משימות"
+    gantt_df = pd.DataFrame(active_tasks)
+    if hasattr(gantt_df.columns, "str"):
+        gantt_df.columns = gantt_df.columns.str.strip()
+    end_col = "תאריך יעד" if "תאריך יעד" in gantt_df.columns else None
+    if not end_col:
+        return None, None, "חסרה עמודת תאריך יעד"
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    if "תאריך התחלה" not in gantt_df.columns:
+        gantt_df["תאריך התחלה"] = today_str
+    gantt_df["_start_dt"] = gantt_df.apply(
+        lambda r: _parse_task_date(str(r.get("תאריך התחלה", "") or "")) or datetime.today(),
+        axis=1,
+    )
+    gantt_df["_end_dt"] = gantt_df.apply(
+        lambda r: _parse_task_date(str(r.get("תאריך יעד", "") or "")) or datetime.today(),
+        axis=1,
+    )
+    mask = gantt_df["_start_dt"] > gantt_df["_end_dt"]
+    gantt_df.loc[mask, "_end_dt"] = gantt_df.loc[mask, "_start_dt"] + timedelta(days=1)
+    gantt_df = gantt_df[gantt_df["_end_dt"].notna()]
+    if gantt_df.empty:
+        return None, None, "אין שורות תקינות לגאנט"
+
+    acol = "הוקצה ל" if "הוקצה ל" in gantt_df.columns else None
+    if acol:
+        gantt_df[acol] = gantt_df[acol].fillna("").astype(str).replace("nan", "")
+        gantt_df["_task_color_key"] = gantt_df[acol].apply(_task_team_key_for_color)
+    else:
+        gantt_df["_task_color_key"] = "(ללא אחראי)"
+
+    if y_axis_mode == "assignee":
+        gantt_df["_y_gantt"] = gantt_df["_task_color_key"]
+    elif y_axis_mode == "project":
+        _proj = gantt_df.get("פרויקט", pd.Series([""] * len(gantt_df))).fillna("").astype(str).str.strip()
+        gantt_df["_y_gantt"] = _proj.mask(_proj.eq(""), "(ללא פרויקט)")
+    else:
+        if "פרויקט" in gantt_df.columns and "שם משימה" in gantt_df.columns:
+            gantt_df["_y_gantt"] = (
+                gantt_df["פרויקט"].fillna("") + " | " + gantt_df["שם משימה"].fillna("")
+            ).str.strip(" |")
+        else:
+            gantt_df["_y_gantt"] = gantt_df.get("שם משימה", pd.Series([""] * len(gantt_df))).fillna("")
+
+    return gantt_df, "_y_gantt", None
+
+
 def show_monitor_3d_page() -> None:
     """מסך מוניטור צוות / משימות: פרויקטים פעילים עם עריכת סטטוס, גאנט ומשימות."""
     st.title("מוניטור צוות / משימות 🖥️")
@@ -4956,52 +5074,20 @@ def show_monitor_3d_page() -> None:
 
     # תרשים גאנט (מעל טבלת המשימות)
     try:
-        if active_tasks:
-            gantt_df = pd.DataFrame(active_tasks)
-            if hasattr(gantt_df.columns, 'str'):
-                gantt_df.columns = gantt_df.columns.str.strip()
-            # וידוא עמודות תאריך (עמודות מסונכרנות)
-            start_col = "תאריך התחלה" if "תאריך התחלה" in gantt_df.columns else None
-            end_col = "תאריך יעד" if "תאריך יעד" in gantt_df.columns else None
-            if not end_col:
-                raise ValueError("חסרה עמודת תאריך יעד")
-            today_str = datetime.today().strftime("%Y-%m-%d")
-            if not start_col or start_col not in gantt_df.columns:
-                gantt_df["תאריך התחלה"] = today_str
-            # המרה ל-datetime
-            gantt_df["_start_dt"] = gantt_df.apply(
-                lambda r: _parse_task_date(str(r.get("תאריך התחלה", "") or "")) or datetime.today(),
-                axis=1
-            )
-            gantt_df["_end_dt"] = gantt_df.apply(
-                lambda r: _parse_task_date(str(r.get("תאריך יעד", "") or "")) or datetime.today(),
-                axis=1
-            )
-            # אם תאריך סיום לפני התחלה - מתקנים לצורך התצוגה
-            mask = gantt_df["_start_dt"] > gantt_df["_end_dt"]
-            gantt_df.loc[mask, "_end_dt"] = gantt_df.loc[mask, "_start_dt"] + timedelta(days=1)
-            gantt_df = gantt_df[gantt_df["_end_dt"].notna()]
-            if gantt_df.empty:
-                raise ValueError("אין שורות תקינות לגאנט")
-            # שם לציר Y: פרויקט + משימה (Project+TaskName) לצורך בהירות
-            if "פרויקט" in gantt_df.columns and "שם משימה" in gantt_df.columns:
-                gantt_df["_task_label"] = (gantt_df["פרויקט"].fillna("") + " | " + gantt_df["שם משימה"].fillna("")).str.strip(" |")
-            else:
-                gantt_df["_task_label"] = gantt_df.get("שם משימה", pd.Series([""] * len(gantt_df))).fillna("")
-            # צבע לפי Assignee (הוקצה ל) - כל חבר צוות מקבל צבע ייחודי
-            color_col = "הוקצה ל" if "הוקצה ל" in gantt_df.columns else ("Assignee" if "Assignee" in gantt_df.columns else None)
-            if color_col is None:
-                gantt_df["_assignee"] = ""
-                color_col = "_assignee"
-            # מילוי ערכים ריקים כדי שהצבעים יופיעו (Plotly דורש ערכים לא-ריקים להבחנה)
-            gantt_df[color_col] = gantt_df[color_col].fillna("").astype(str).replace("nan", "(ללא)")
+        gantt_df, y_col, _err = _build_gantt_dataframe_for_timeline(active_tasks, "task_detail")
+        if gantt_df is not None and y_col:
+            _gantt_color_map = {**TEAM_GANTT_COLOR_HEX}
+            for _k in gantt_df["_task_color_key"].unique():
+                if _k not in _gantt_color_map:
+                    _gantt_color_map[_k] = "#888888"
             fig = px.timeline(
                 gantt_df,
                 x_start="_start_dt",
                 x_end="_end_dt",
-                y="_task_label",
-                color=color_col,
-                text=color_col,
+                y=y_col,
+                color="_task_color_key",
+                color_discrete_map=_gantt_color_map,
+                text="_task_color_key",
                 title="תרשים גאנט - משימות פעילות",
             )
             fig.update_yaxes(autorange="reversed")  # משימות חדשות בראש
@@ -5125,6 +5211,7 @@ def show_tasks_page() -> None:
                 if task_name is not None:
                     existing = read_tasks()
                     row = {
+                        "מזהה משימה": str(uuid.uuid4()),
                         "פרויקט": selected_project,
                         "שם משימה": task_name,
                         "תיאור המשימה": task_desc,
@@ -5181,12 +5268,9 @@ def show_tasks_page() -> None:
             return dt.date() if hasattr(dt, "date") else dt
 
         def _mark_task_done_monitor(task: dict) -> None:
-            for t in tasks_rows_monitor:
-                if (t.get("פרויקט") == task.get("פרויקט") and t.get("שם משימה") == task.get("שם משימה")
-                        and t.get("הוקצה ל") == task.get("הוקצה ל") and t.get("תאריך התחלה") == task.get("תאריך התחלה")
-                        and t.get("תאריך יעד") == task.get("תאריך יעד")):
-                    t["סטטוס"] = "הסתיים"
-                    break
+            idx_done = _find_task_row_index_in_full_list(tasks_rows_monitor, task)
+            if idx_done is not None:
+                tasks_rows_monitor[idx_done] = {**tasks_rows_monitor[idx_done], "סטטוס": "הסתיים"}
             write_tasks(tasks_rows_monitor, skip_rerun=True)
             st.cache_data.clear()  # Ensure monitor pulls fresh data from Google Sheets
             time.sleep(1)
@@ -5427,15 +5511,16 @@ def show_tasks_page() -> None:
         st.divider()
         st.markdown("### ✏️ עריכת ועדכון משימה")
         tasks_for_edit = read_tasks()
-
-        def _task_row_key_edit(r: dict) -> tuple:
-            return (
-                str(r.get("פרויקט", "") or ""),
-                str(r.get("שם משימה", "") or ""),
-                str(r.get("הוקצה ל", "") or ""),
-                str(r.get("תאריך התחלה", "") or ""),
-                str(r.get("תאריך יעד", "") or ""),
-            )
+        is_management_tasks = st.session_state.get("is_management", False)
+        current_user_tasks = (st.session_state.get("current_user") or "").strip()
+        if not is_management_tasks and current_user_tasks:
+            tasks_for_edit = [
+                t for t in tasks_for_edit
+                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user_tasks)
+            ]
+            st.caption(f"מוצגות רק משימות שבהן **אחראי** הוא **{current_user_tasks}**.")
+        elif not is_management_tasks and not current_user_tasks:
+            tasks_for_edit = []
 
         def _task_display_label(r: dict) -> str:
             p = (r.get("פרויקט") or "").strip()
@@ -5488,23 +5573,26 @@ def show_tasks_page() -> None:
                 index=status_index,
                 key=f"edit_task_status_val_{edit_idx}",
             )
+            new_desc = st.text_area(
+                "תיאור המשימה",
+                value=(sel_row.get("תיאור המשימה") or ""),
+                key=f"edit_task_desc_val_{edit_idx}",
+                height=120,
+            )
 
             if st.button("שמור עדכון משימה", type="primary", key="save_edit_task_btn"):
-                target_key = _task_row_key_edit(sel_row)
-                updated_rows: list[dict] = []
-                found = False
-                for r in read_tasks():
-                    if _task_row_key_edit(r) == target_key:
-                        r = dict(r)
-                        r["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
-                        r["הוקצה ל"] = new_assignee
-                        r["סטטוס"] = new_status
-                        found = True
-                    updated_rows.append(r)
-                if not found:
-                    st.error("לא נמצאה המשימה במסד הנתונים (אולי עודכנה בינתיים). רענן ונסה שוב.")
+                full_rows = read_tasks()
+                row_idx = _find_task_row_index_in_full_list(full_rows, sel_row)
+                if row_idx is None:
+                    st.error("לא נמצאה המשימה בגיליון (אולי נמחקה או עודכנה). רענן ונסה שוב.")
                 else:
-                    write_tasks(updated_rows, skip_rerun=True)
+                    updated = dict(full_rows[row_idx])
+                    updated["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
+                    updated["הוקצה ל"] = new_assignee
+                    updated["סטטוס"] = new_status
+                    updated["תיאור המשימה"] = (new_desc or "").strip()
+                    full_rows[row_idx] = updated
+                    write_tasks(full_rows, skip_rerun=True)
                     st.cache_data.clear()
                     st.success("המשימה עודכנה בהצלחה!")
                     time.sleep(1)
@@ -5610,6 +5698,77 @@ def show_tasks_page() -> None:
 
     elif sub_nav == "לוח עומסים (גאנט ויומן) 📊":
         st.subheader("לוח עומסים צוותי - לוח שנה אינטראקטיבי")
+
+        is_management_wl = st.session_state.get("is_management", False)
+        current_user_wl = (st.session_state.get("current_user") or "").strip()
+        if is_management_wl:
+            st.caption("תרשים הגאנט מציג את כל משימות הצוות (מנהלים: טל וערן).")
+        elif current_user_wl:
+            st.caption(f"תרשים הגאנט מציג רק את **המשימות שלך** (אחראי: {current_user_wl}).")
+        else:
+            st.caption("לא זוהה משתמש — הגאנט עשוי להיות ריק.")
+
+        st.markdown("#### תרשים גאנט אינטראקטיבי")
+        wl_axis_mode = st.radio(
+            "ציר אנכי (בחירת תצוגה)",
+            ["task_detail", "assignee", "project"],
+            format_func=lambda x: {
+                "task_detail": "משימה (פרויקט | שם)",
+                "assignee": "עובד (אחראי)",
+                "project": "פרויקט",
+            }[x],
+            horizontal=True,
+            key="workload_gantt_y_mode",
+        )
+        _wl_excluded = ("הסתיים", "בוטל")
+        _wl_ex_lower = [s.strip().lower() for s in _wl_excluded]
+        tasks_wl_all = read_tasks()
+        active_wl = [
+            t for t in tasks_wl_all
+            if (t.get("סטטוס") or "").strip().lower() not in _wl_ex_lower
+        ]
+        if not is_management_wl and current_user_wl:
+            active_wl = [
+                t for t in active_wl
+                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user_wl)
+            ]
+        elif not is_management_wl and not current_user_wl:
+            active_wl = []
+
+        try:
+            gantt_wl, y_wl, err_wl = _build_gantt_dataframe_for_timeline(active_wl, wl_axis_mode)
+            if gantt_wl is not None and y_wl:
+                _cm_wl = {**TEAM_GANTT_COLOR_HEX}
+                for _k in gantt_wl["_task_color_key"].unique():
+                    if _k not in _cm_wl:
+                        _cm_wl[_k] = "#888888"
+                _y_title = {"task_detail": "משימה", "assignee": "עובד", "project": "פרויקט"}.get(
+                    wl_axis_mode, "משימה"
+                )
+                fig_wl = px.timeline(
+                    gantt_wl,
+                    x_start="_start_dt",
+                    x_end="_end_dt",
+                    y=y_wl,
+                    color="_task_color_key",
+                    color_discrete_map=_cm_wl,
+                    text="_task_color_key",
+                    title="תרשים גאנט — עומסי עבודה (תאריך התחלה עד תאריך יעד)",
+                )
+                fig_wl.update_yaxes(autorange="reversed")
+                fig_wl.update_layout(
+                    xaxis_title="זמן",
+                    yaxis_title=_y_title,
+                    height=max(420, min(2400, len(gantt_wl) * 28)),
+                )
+                st.plotly_chart(fig_wl, use_container_width=True)
+            else:
+                st.info(err_wl or "אין משימות פעילות להצגת גאנט.")
+        except Exception as e:
+            st.warning(f"לא ניתן להציג גאנט: {e}")
+
+        st.divider()
+        st.subheader("לוח שנה — חגים ומשימות")
         calendar_events = []
 
         # טעינת חגים וחופשות בטוחה
