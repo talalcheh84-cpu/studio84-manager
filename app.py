@@ -654,6 +654,41 @@ TEAM_EMAIL_BY_SHORT = {name.split('-')[0].strip(): email for name, email in TEAM
 # מספר וואצאפ של ערן (placeholder - ניתן למלא/לשנות)
 WHATSAPP_ERAN = "972547641984"
 
+# שמות צוות + מיילים (בורר 'מי מחובר למערכת' ושליחת מיילים)
+TEAM_EMAILS = {
+    "טל": "talalcheh84@gmail.com",
+    "ערן": "eran@studio84.co.il",
+    "מיה": "maya@studio84.co.il",
+    "ליאור": "lior@studio84.co.il",
+    "אחיעד": "achiad@studio84.co.il",
+    "אור": "or@studio84.co.il",
+    "ג׳ורג׳": "George.berdichevsky@gmail.com",
+    "הנהלת חשבונות": "accounts@studio84.co.il",
+}
+MANAGEMENT_USERS = frozenset({"טל", "ערן"})
+
+
+def _assignee_cell_matches_login(task_assignee: str, selected_user: str) -> bool:
+    """התאמת ערך עמודת 'הוקצה ל' (איש צוות / אחראי) למשתמש הנבחר בצד."""
+    a = (task_assignee or "").strip()
+    s = (selected_user or "").strip()
+    if not a or not s:
+        return False
+
+    def _matches(sel: str) -> bool:
+        if not sel:
+            return False
+        return a == sel or a.startswith(sel + " ") or a.startswith(sel + "-")
+
+    if _matches(s):
+        return True
+    if s == "טל" and _matches("טלי"):
+        return True
+    if s == "טלי" and _matches("טל"):
+        return True
+    return False
+
+
 # סיסמת מנהל (Admin)
 ADMIN_PASSWORD = "8484"
 # שמות/תפקידים שמוגדרים כמנהלים - לצורכי הרשאות וסינון תצוגה
@@ -748,6 +783,14 @@ TASKS_LOG_COLUMNS = [
     "סטטוס",
 ]
 TASK_STATUSES = ["To Do", "In Progress", "Done", "Stuck"]
+# סטטוסים לעריכת משימה (טאב מוניטור) ולטבלת המשימות
+TASK_EDIT_STATUS_OPTIONS = [
+    "ממתין",
+    "בעבודה",
+    "ממתין לפידבק לקוח",
+    "הסתיים",
+    "הושלם",
+]
 TASK_PRIORITIES = ["רגיל", "דחוף", "קריטי"]
 
 # סוגי משימות להקצאה לצוות (טאב 'הקצאת משימות לצוות')
@@ -3603,19 +3646,9 @@ def show_quotes_management_page() -> None:
                 else:
                     st.caption("לא נוצרו קישורי דרופבוקס לפרויקט זה (או שנכשלו בעת ההמרה).")
 
-                team_emails = {
-                    "טלי": "talalcheh84@gmail.com",
-                    "ערן": "eran@studio84.co.il",
-                    "מיה ": "maya@studio84.co.il",
-                    "ליאור": "lior@studio84.co.il",
-                    "אחיעד": "achiad@studio84.co.il",
-                    "אור": "or@studio84.co.il",
-                    "ג׳ורג׳": "George.berdichevsky@gmail.com",
-                    "הנהלת חשבונות": "accounts@studio84.co.il",
-                }
                 kickoff_recipients = st.multiselect(
                     "נמעני מייל (צוות)",
-                    options=list(team_emails.keys()),
+                    options=list(TEAM_EMAILS.keys()),
                     default=[],
                     key="quote_mgmt_kickoff_recipients",
                 )
@@ -3628,7 +3661,7 @@ def show_quotes_management_page() -> None:
                     actual_emails_list = []
                     seen = set()
                     for name in kickoff_recipients or []:
-                        em = team_emails.get(name)
+                        em = TEAM_EMAILS.get(name)
                         if em and str(em).strip():
                             addr = str(em).strip()
                             if addr not in seen:
@@ -3636,7 +3669,7 @@ def show_quotes_management_page() -> None:
                                 actual_emails_list.append(addr)
                     if not actual_emails_list:
                         st.warning(
-                            "לא נמצאו כתובות מייל: בחרו חברי צוות שמופיעים במילון, או הוסיפו את השם והכתובת ב-team_emails."
+                            "לא נמצאו כתובות מייל: בחרו חברי צוות שמופיעים במילון TEAM_EMAILS, או הוסיפו את השם והכתובת שם."
                         )
                     else:
                         deadline_k = date.today().strftime("%d/%m/%Y")
@@ -4675,8 +4708,8 @@ def _parse_task_date(date_str: str):
 
 
 def show_monitor_3d_page() -> None:
-    """מסך מוניטור צוות תלת-מימד: פרויקטים פעילים עם עריכת סטטוס בלבד."""
-    st.title("מוניטור צוות תלת-מימד 🖥️")
+    """מסך מוניטור צוות / משימות: פרויקטים פעילים עם עריכת סטטוס, גאנט ומשימות."""
+    st.title("מוניטור צוות / משימות 🖥️")
 
     projects_rows = read_projects()
     if not projects_rows:
@@ -4744,6 +4777,19 @@ def show_monitor_3d_page() -> None:
     # --- תרשים גאנט וטבלת משימות ---
     st.divider()
     st.subheader("תרשים גאנט וטבלת משימות")
+    is_management = st.session_state.get("is_management", False)
+    current_user = (st.session_state.get("current_user") or "").strip()
+
+    if is_management:
+        task_assignee_filter = st.selectbox(
+            "סינון לפי איש צוות / אחראי",
+            options=["הכל"] + list(TEAM_EMAILS.keys()),
+            key="monitor_3d_task_assignee_filter",
+        )
+    else:
+        st.caption(f"מוצגות רק משימות שבהן **איש צוות / אחראי** הוא **{current_user}**.")
+        task_assignee_filter = None
+
     tasks_rows_raw = read_tasks()
     TASK_EXCLUDED_STATUSES = ("הסתיים", "בוטל")
     task_excluded_lower = [s.strip().lower() for s in TASK_EXCLUDED_STATUSES]
@@ -4752,23 +4798,19 @@ def show_monitor_3d_page() -> None:
         if (t.get("סטטוס") or "").strip().lower() not in task_excluded_lower
     ]
 
-    # סינון לפי משתמש מחובר (מנהל רואה הכל, עובד רואה רק את משימותיו)
-    if st.session_state.get("role") != "manager":
-        username = (st.session_state.get("username") or st.session_state.get("current_user") or "").strip()
-        # מיפוי שמות מדויק מעברית לאנגלית לחיפוש בעמודת ההקצאה
-        name_mapping = {'tali': 'טלי', 'eran': 'ערן', 'or': 'אור', 'maya': 'מיה', 'george': "ג'ורג'", 'achiad': 'אחיעד'}
-        search_name = name_mapping.get(username.lower(), username) if username else username
-        df_filter = pd.DataFrame(active_tasks)
-        if hasattr(df_filter.columns, "str"):
-            df_filter.columns = df_filter.columns.str.strip()
-        col_for_filter = "הוקצה ל" if "הוקצה ל" in df_filter.columns else None
-        if col_for_filter is not None and username:
-            df_filter = df_filter[
-                df_filter["הוקצה ל"].astype(str).str.contains(search_name, case=False, na=False)
+    if not is_management:
+        if current_user:
+            active_tasks = [
+                t for t in active_tasks
+                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user)
             ]
-            active_tasks = df_filter.to_dict(orient="records") if not df_filter.empty else []
         else:
             active_tasks = []
+    elif task_assignee_filter and task_assignee_filter != "הכל":
+        active_tasks = [
+            t for t in active_tasks
+            if _assignee_cell_matches_login(t.get("הוקצה ל"), task_assignee_filter)
+        ]
 
     if not active_tasks:
         st.info("אין לך משימות פתוחות כרגע! 🎉")
@@ -4853,6 +4895,7 @@ def show_monitor_3d_page() -> None:
         key="task_editor",
         disabled=disabled_cols,
         column_config={
+            "הוקצה ל": st.column_config.TextColumn("איש צוות / אחראי"),
             "סטטוס": st.column_config.SelectboxColumn(
                 "סטטוס",
                 options=status_options,
@@ -5128,6 +5171,8 @@ def show_tasks_page() -> None:
             if df.empty:
                 st.info("אין משימות להצגה.")
             else:
+                existing_s = [s for s in df["סטטוס"].unique() if s and str(s).strip()]
+                status_options_table = list(dict.fromkeys(list(TASK_EDIT_STATUS_OPTIONS) + existing_s))
                 try:
                     editable_cols = ["סטטוס"]
                     # איחור וסמן למחיקה - עריכה מותרת רק בסמן למחיקה (תיבת סימון)
@@ -5145,7 +5190,7 @@ def show_tasks_page() -> None:
                             ),
                             "סטטוס": st.column_config.SelectboxColumn(
                                 "סטטוס",
-                                options=["ממתין", "בעבודה", "הסתיים"],
+                                options=status_options_table,
                                 required=True,
                             ),
                         },
@@ -5196,6 +5241,92 @@ def show_tasks_page() -> None:
                         st.success("המשימות נמחקו בהצלחה!")
                         time.sleep(1)
                         st.rerun()
+
+        st.divider()
+        st.markdown("### ✏️ עריכת ועדכון משימה")
+        tasks_for_edit = read_tasks()
+
+        def _task_row_key_edit(r: dict) -> tuple:
+            return (
+                str(r.get("פרויקט", "") or ""),
+                str(r.get("שם משימה", "") or ""),
+                str(r.get("הוקצה ל", "") or ""),
+                str(r.get("תאריך התחלה", "") or ""),
+                str(r.get("תאריך יעד", "") or ""),
+            )
+
+        def _task_display_label(r: dict) -> str:
+            p = (r.get("פרויקט") or "").strip()
+            n = (r.get("שם משימה") or "").strip()
+            a = (r.get("הוקצה ל") or "").strip()
+            if p and n:
+                base = f"{p} — {n}"
+            else:
+                base = p or n or "(ללא תיאור)"
+            return f"{base} ({a})" if a else base
+
+        if not tasks_for_edit:
+            st.info("אין משימות לעריכה. הוסף משימה בטאב 'הקצאת משימה חדשה'.")
+        elif spreadsheet is None:
+            st.warning("אין חיבור לגוגל שיטס — לא ניתן לערוך משימות עד שהחיבור יוחזר.")
+        else:
+            edit_idx = st.selectbox(
+                "בחר משימה לעדכון",
+                options=list(range(len(tasks_for_edit))),
+                format_func=lambda i: _task_display_label(tasks_for_edit[i]),
+                key="edit_existing_task_select",
+            )
+            sel_row = tasks_for_edit[edit_idx]
+            cur_due = _parse_date_safe(sel_row.get("תאריך יעד"), "תאריך יעד") or date.today()
+            cur_assignee = (sel_row.get("הוקצה ל") or "").strip()
+            assignee_opts = list(TASK_TEAM)
+            if cur_assignee and cur_assignee not in assignee_opts:
+                assignee_opts = [cur_assignee] + assignee_opts
+            cur_status = (sel_row.get("סטטוס") or "").strip()
+            status_opts = list(TASK_EDIT_STATUS_OPTIONS)
+            if cur_status and cur_status not in status_opts:
+                status_opts = [cur_status] + status_opts
+            assignee_index = assignee_opts.index(cur_assignee) if cur_assignee in assignee_opts else 0
+            status_index = status_opts.index(cur_status) if cur_status in status_opts else 0
+
+            new_due = st.date_input(
+                "תאריך יעד",
+                value=cur_due,
+                key=f"edit_task_due_val_{edit_idx}",
+            )
+            new_assignee = st.selectbox(
+                "איש צוות אחראי",
+                options=assignee_opts,
+                index=assignee_index,
+                key=f"edit_task_assignee_val_{edit_idx}",
+            )
+            new_status = st.selectbox(
+                "סטטוס משימה",
+                options=status_opts,
+                index=status_index,
+                key=f"edit_task_status_val_{edit_idx}",
+            )
+
+            if st.button("שמור עדכון משימה", type="primary", key="save_edit_task_btn"):
+                target_key = _task_row_key_edit(sel_row)
+                updated_rows: list[dict] = []
+                found = False
+                for r in read_tasks():
+                    if _task_row_key_edit(r) == target_key:
+                        r = dict(r)
+                        r["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
+                        r["הוקצה ל"] = new_assignee
+                        r["סטטוס"] = new_status
+                        found = True
+                    updated_rows.append(r)
+                if not found:
+                    st.error("לא נמצאה המשימה במסד הנתונים (אולי עודכנה בינתיים). רענן ונסה שוב.")
+                else:
+                    write_tasks(updated_rows, skip_rerun=True)
+                    st.cache_data.clear()
+                    st.success("המשימה עודכנה בהצלחה!")
+                    time.sleep(1)
+                    st.rerun()
 
         # --- אנשי קשר לפרויקט ---
         st.divider()
@@ -5916,29 +6047,40 @@ def main() -> None:
     if "monitor_title" not in st.session_state:
         st.session_state.monitor_title = "כל הפרויקטים (ללא סינון)"
 
-    role = st.session_state.get("role", "team")
-
     st.sidebar.title("תפריט ניהול")
+    current_user = st.sidebar.selectbox(
+        "מי מחובר למערכת?",
+        options=list(TEAM_EMAILS.keys()),
+        key="sidebar_current_user",
+    )
+    st.session_state["current_user"] = current_user
+    is_management = current_user in MANAGEMENT_USERS
+    st.session_state["is_management"] = is_management
+
     if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
         st.cache_data.clear()  # ניקוי cache כדי לטעון נתונים עדכניים מגוגל שיטס
         st.rerun()
 
-    if role == "team":
-        # צוות - רק מוניטור צוות תלת-מימד והתקשורת המהירה
+    if not is_management:
+        # צוות — רק מוניטור משימות (ללא הצעות/לקוחות/חדר מצב)
         _render_quick_comm_sidebar_form()
         _render_quick_comm_notifications()
         show_monitor_3d_page()
         st.sidebar.markdown("---")
         if st.sidebar.button("התנתק 🚪", key="logout_btn", use_container_width=True):
-            for k in ("logged_in", "username", "role", "current_user"):
+            for k in ("logged_in", "username", "role", "current_user", "is_management"):
                 st.session_state.pop(k, None)
             st.rerun()
         return
 
-    # מנהל - ניווט מלא: חדר מצב, מוניטור תלת-מימד, ניהול שוטף
+    # טל / ערן — ניווט מלא: חדר מצב, מוניטור משימות, ניהול שוטף
     main_nav = st.sidebar.radio(
         "ניווט ראשי:",
-        ["📊 חדר מצב (מוניטור פרויקטים)", "🖥️ מוניטור צוות תלת-מימד", "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)"],
+        [
+            "📊 חדר מצב (מוניטור פרויקטים)",
+            "🖥️ מוניטור צוות / משימות",
+            "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)",
+        ],
     )
 
     # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
@@ -6047,7 +6189,7 @@ def main() -> None:
             st.session_state.monitor_title = ""
             st.rerun()
 
-    elif main_nav == "🖥️ מוניטור צוות תלת-מימד":
+    elif main_nav == "🖥️ מוניטור צוות / משימות":
         _render_quick_comm_notifications()
         _render_quick_comm_sidebar_form()
         _render_dropbox_access_token_hint_sidebar()
@@ -6083,7 +6225,7 @@ def main() -> None:
     # כפתור התנתקות בתחתית תפריט הצד (למנהל)
     st.sidebar.markdown("---")
     if st.sidebar.button("התנתק 🚪", key="logout_btn_manager", use_container_width=True):
-        for k in ("logged_in", "username", "role", "current_user"):
+        for k in ("logged_in", "username", "role", "current_user", "is_management"):
             st.session_state.pop(k, None)
         st.rerun()
 
