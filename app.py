@@ -1189,11 +1189,6 @@ def send_kickoff_email(
         return False
 
 
-def _get_quote_smtp_config(smtp_profile: str) -> dict:
-    """נתוני SMTP ממקטע [email] ב-secrets (כמו send_kickoff_email). smtp_profile נשמר לתאימות קריאה."""
-    return dict(st.secrets.get("email", {}) or {})
-
-
 def send_quote_email_via_smtp(
     to_email: str,
     subject: str,
@@ -1206,14 +1201,23 @@ def send_quote_email_via_smtp(
     מחזיר True אם השליחה הצליחה, False אחרת.
     """
     try:
-        email_config = _get_quote_smtp_config(smtp_profile)
-        smtp_server = (email_config.get("smtp_server") or "").strip()
-        smtp_port = int(email_config.get("smtp_port", 465))
-        sender_email = (email_config.get("sender_email") or "").strip()
-        password = (email_config.get("password") or "").strip()
+        if smtp_profile == "tali":
+            smtp_server = "smtp.gmail.com"
+            smtp_port = 587
+            sender_email = str(st.secrets["email_tali"]["sender_email"]).strip()
+            password = str(st.secrets["email_tali"]["password"]).strip()
+        elif smtp_profile == "eran":
+            email_eran = dict(st.secrets.get("email_eran", {}) or {})
+            smtp_server = (email_eran.get("smtp_server") or "").strip()
+            smtp_port = int(email_eran.get("smtp_port", 465))
+            sender_email = (email_eran.get("sender_email") or "").strip()
+            password = (email_eran.get("password") or "").strip()
+        else:
+            st.error("פרופיל SMTP לא נתמך.")
+            return False
         if not smtp_server or not sender_email or not password:
             st.error(
-                "חסרים נתוני אימייל ב-secrets (במקטע [email]: smtp_server, sender_email, password)"
+                "חסרים נתוני אימייל ב-secrets (בדוק מקטע [email_tali] או [email_eran] בהתאם לבחירה)"
             )
             return False
         to_email = (to_email or "").strip()
