@@ -2137,16 +2137,15 @@ def send_project_kickoff_email_eran(
     brief_notes: str = "",
 ) -> bool:
     """
-    מייל התנעת פרויקט לנמענים שנבחרו — אותה לוגיקת SMTP כמו send_quote_email_via_smtp (פרופיל email_eran).
+    מייל התנעת פרויקט לנמענים שנבחרו — אותן הגדרות SMTP כמו send_quote_email_via_smtp (פרופיל tali / email_tali).
     """
     try:
-        email_eran = dict(st.secrets.get("email_eran", {}) or {})
-        smtp_server = (email_eran.get("smtp_server") or "").strip()
-        smtp_port = int(email_eran.get("smtp_port", 465))
-        sender_email = (email_eran.get("sender_email") or "").strip()
-        password = (email_eran.get("password") or "").strip()
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        sender_email = str(st.secrets["email_tali"]["sender_email"]).strip()
+        password = str(st.secrets["email_tali"]["password"]).strip()
         if not smtp_server or not sender_email or not password:
-            st.error("חסרים נתוני אימייל ב-secrets (מקטע [email_eran])")
+            st.error("חסרים נתוני אימייל ב-secrets (מקטע [email_tali])")
             return False
         cleaned = [e.strip() for e in (to_emails or []) if e and str(e).strip()]
         if not cleaned:
