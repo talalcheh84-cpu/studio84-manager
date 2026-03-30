@@ -133,6 +133,18 @@ QUOTES_REJECTED = QUOTES_ROOT / "Rejected"
 
 # תיקייה מקומית להצעות - שומרת את הקובץ בין שמירה לשליחת מייל (לאחר rerun של Streamlit)
 TEMP_PROPOSALS_DIR = BASE_DIR / "temp_proposals"
+# עותק קשיח של ה-PDF האחרון בתיקיית הפרויקט – לצירוף למייל (עמיד ב-rerun של Streamlit)
+CURRENT_QUOTE_TEMP_PDF = BASE_DIR / "current_quote_temp.pdf"
+
+
+def _persist_current_quote_temp_pdf(source_path: str | Path) -> None:
+    """מעתיק את קובץ ה-PDF לשם קבוע בשורש הפרויקט לשליחה אמינה."""
+    try:
+        p = Path(source_path)
+        if p.is_file() and p.suffix.lower() == ".pdf":
+            shutil.copyfile(str(p), str(CURRENT_QUOTE_TEMP_PDF))
+    except Exception:
+        pass
 
 
 MESSAGES_COLUMNS = ["Timestamp", "Sender", "Recipient", "Type", "Message"]
@@ -1177,36 +1189,48 @@ def send_kickoff_email(
         return False
 
 
+def _get_quote_smtp_config(smtp_profile: str) -> dict:
+    """smtp_profile: 'tali' (שליחה כטלי / Gmail) או 'eran' (Webmail / ערן)."""
+    if smtp_profile == "tali":
+        v = st.secrets.get("email_tali")
+        if isinstance(v, dict):
+            return dict(v)
+        cfg = dict(st.secrets.get("email", {}) or {})
+        if isinstance(v, str) and v.strip():
+            cfg = dict(cfg)
+            cfg["sender_email"] = v.strip()
+        return cfg
+    v = st.secrets.get("email_eran")
+    if isinstance(v, dict):
+        return dict(v)
+    cfg = dict(st.secrets.get("email", {}) or {})
+    if isinstance(v, str) and v.strip():
+        cfg = dict(cfg)
+        cfg["sender_email"] = v.strip()
+    return cfg
+
+
 def send_quote_email_via_smtp(
     to_email: str,
     subject: str,
     body: str,
-    pdf_path: str | Path,
     cc_list: list[str] | None = None,
-    file_bytes: bytes | None = None,
-    file_name: str | None = None,
-    proposal_file_path: str | Path | None = None,
+    smtp_profile: str = "eran",
 ) -> bool:
     """
-    שולח מייל הצעת מחיר ללקוח עם PDF מצורף.
-    משתמש ב-st.session_state['final_pdf_bytes'] בלבד (ללא קריאה מהדיסק).
+    שולח מייל הצעת מחיר ללקוח עם PDF מצורף מקובץ פיזי קבוע (current_quote_temp.pdf).
     מחזיר True אם השליחה הצליחה, False אחרת.
     """
     try:
-        email_eran = st.secrets.get("email_eran")
-        if isinstance(email_eran, dict):
-            email_config = email_eran
-        else:
-            email_config = st.secrets.get("email", {}) or {}
-            if isinstance(email_eran, str) and email_eran.strip():
-                email_config = dict(email_config)
-                email_config["sender_email"] = email_eran.strip()
+        email_config = _get_quote_smtp_config(smtp_profile)
         smtp_server = (email_config.get("smtp_server") or "").strip()
         smtp_port = int(email_config.get("smtp_port", 465))
         sender_email = (email_config.get("sender_email") or "").strip()
         password = (email_config.get("password") or "").strip()
         if not smtp_server or not sender_email or not password:
-            st.error("חסרים נתוני אימייל ב-secrets (email_eran או email: smtp_server, sender_email, password)")
+            st.error(
+                "חסרים נתוני אימייל ב-secrets (לטלי: email_tali או email; לערן: email_eran או email: smtp_server, sender_email, password)"
+            )
             return False
         to_email = (to_email or "").strip()
         if not to_email:
@@ -1221,23 +1245,17 @@ def send_quote_email_via_smtp(
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
         msg.attach(MIMEText(body, "plain"))
 
-        if "final_pdf_bytes" in st.session_state:
-            try:
-                pdf_attachment = MIMEApplication(
-                    st.session_state["final_pdf_bytes"], _subtype="pdf"
-                )
+        file_to_attach = str(CURRENT_QUOTE_TEMP_PDF)
+        if os.path.exists(file_to_attach):
+            with open(file_to_attach, "rb") as f:
+                pdf_attachment = MIMEApplication(f.read(), _subtype="pdf")
                 pdf_attachment.add_header(
-                    "Content-Disposition",
-                    "attachment",
-                    filename="Quote_Studio84.pdf",
+                    "Content-Disposition", "attachment", filename="Quote_Studio84.pdf"
                 )
                 msg.attach(pdf_attachment)
-            except Exception as e:
-                st.error(f"שגיאה בצירוף הקובץ לאובייקט המייל: {e}")
-                st.stop()
         else:
             st.error(
-                "שגיאה: קובץ ה-PDF לא נמצא בזיכרון. אנא שמור את ההצעה מחדש."
+                "הקובץ הפיזי לא נמצא. אנא לחץ שוב על 'שמור / עדכן הצעת מחיר' כדי לייצר אותו."
             )
             st.stop()
 
@@ -2848,6 +2866,7 @@ def show_quote_page() -> None:
                 else:
                     with open(pdf_filename, "rb") as f:
                         st.session_state["final_pdf_bytes"] = f.read()
+                    _persist_current_quote_temp_pdf(pdf_path)
             except Exception as pdf_err:
                 st.error(f"המסמך נוצר, אך המרה ל-PDF נכשלה: {pdf_err}")
 
@@ -3018,6 +3037,7 @@ def show_quote_page() -> None:
                         _pdf_data = f.read()
                         st.session_state['pdf_bytes'] = _pdf_data
                         st.session_state['final_pdf_bytes'] = _pdf_data
+                    _persist_current_quote_temp_pdf(pdf_path)
                 else:
                     st.session_state['pdf_bytes'] = None
                     st.session_state['final_pdf_bytes'] = None
@@ -3090,6 +3110,8 @@ def show_quote_page() -> None:
                     st.session_state["pdf_bytes_for_email"] = main_bytes if _is_pdf_edit else None
                     st.session_state["pdf_bytes"] = main_bytes if _is_pdf_edit else None
                     st.session_state["final_pdf_bytes"] = main_bytes if _is_pdf_edit else None
+                    if _is_pdf_edit:
+                        _persist_current_quote_temp_pdf(fp)
                 else:
                     st.session_state["current_file_bytes"] = None
                     st.session_state["current_file_name"] = None
@@ -3191,8 +3213,7 @@ def show_quote_page() -> None:
         email_tali_str = str(email_tali).strip() if email_tali else EMAIL_MYSELF
         email_eran_str = str(email_eran_addr).strip() if email_eran_addr else EMAIL_ERAN
         cc_base = [EMAIL_ACCOUNTING]
-        # חיווי שהקובץ מצורף ומוכן לשליחה (רק final_pdf_bytes בזיכרון)
-        file_ready = bool(st.session_state.get("final_pdf_bytes"))
+        file_ready = CURRENT_QUOTE_TEMP_PDF.exists()
         if file_ready:
             st.success("📎 הקובץ מצורף ומוכן לשליחה ללקוח")
         else:
@@ -3208,32 +3229,47 @@ def show_quote_page() -> None:
         )
         cc_list = cc_base + [email_tali_str, email_eran_str]
         if send_via == "שליחה מ-Gmail (טלי)":
-            gmail_url = build_gmail_link(client_email_mail, cc_list, email_subject, email_body)
-            st.link_button("שלח הצעת מחיר ללקוח 🚀", gmail_url)
-            st.caption("💡 הורד את הקובץ למעלה וצרף אותו ידנית למייל ב-Gmail")
-        else:
-            if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn", type="primary"):
+            if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn_gmail", type="primary"):
                 if not client_email_mail or not client_email_mail.strip():
                     st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
+                elif not CURRENT_QUOTE_TEMP_PDF.exists():
+                    st.error(
+                        "הקובץ הפיזי לא נמצא. אנא לחץ שוב על 'שמור / עדכן הצעת מחיר' כדי לייצר אותו."
+                    )
                 else:
-                    if 'final_pdf_bytes' not in st.session_state or not st.session_state['final_pdf_bytes']:
-                        st.error("הקובץ לא קיים בזיכרון. אנא שמור את ההצעה מחדש.")
-                    else:
-                        with st.spinner("שולח מייל..."):
-                            ok = send_quote_email_via_smtp(
-                                client_email_mail,
-                                email_subject,
-                                email_body,
-                                pdf_path="",
-                                cc_list=cc_list,
-                                file_bytes=None,
-                                file_name=None,
-                                proposal_file_path=None,
-                            )
-                        if ok:
-                            st.success("המייל נשלח בהצלחה ללקוח!")
-                            time.sleep(2)
-                            st.rerun()
+                    with st.spinner("שולח מייל..."):
+                        ok = send_quote_email_via_smtp(
+                            client_email_mail,
+                            email_subject,
+                            email_body,
+                            cc_list=cc_list,
+                            smtp_profile="tali",
+                        )
+                    if ok:
+                        st.success("המייל נשלח בהצלחה ללקוח!")
+                        time.sleep(2)
+                        st.rerun()
+        else:
+            if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn_webmail", type="primary"):
+                if not client_email_mail or not client_email_mail.strip():
+                    st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
+                elif not CURRENT_QUOTE_TEMP_PDF.exists():
+                    st.error(
+                        "הקובץ הפיזי לא נמצא. אנא לחץ שוב על 'שמור / עדכן הצעת מחיר' כדי לייצר אותו."
+                    )
+                else:
+                    with st.spinner("שולח מייל..."):
+                        ok = send_quote_email_via_smtp(
+                            client_email_mail,
+                            email_subject,
+                            email_body,
+                            cc_list=cc_list,
+                            smtp_profile="eran",
+                        )
+                    if ok:
+                        st.success("המייל נשלח בהצלחה ללקוח!")
+                        time.sleep(2)
+                        st.rerun()
 
         if st.button("🔄 התחל הצעה חדשה", key="reset_quote_btn"):
             for k in [
