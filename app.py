@@ -689,6 +689,122 @@ def _assignee_cell_matches_login(task_assignee: str, selected_user: str) -> bool
     return False
 
 
+def _assignee_matches_team_key(task_assignee: str, team_key: str) -> bool:
+    """התאמת 'הוקצה ל' למפתח ב-TEAM_EMAILS: טל/טלי + איחוד גרש (ג'ורג' / ג׳ורג׳)."""
+    if _assignee_cell_matches_login(task_assignee, team_key):
+        return True
+    a = (task_assignee or "").strip()
+    k = (team_key or "").strip()
+    if not a or not k:
+        return False
+
+    def _norm(x: str) -> str:
+        return x.replace("'", "\u05f3").replace("\u2019", "\u05f3")
+
+    an, kn = _norm(a), _norm(k)
+    if an == kn or an.startswith(kn + " ") or an.startswith(kn + "-"):
+        return True
+    return False
+
+
+def _team_email_for_task_assignee(assignee: str) -> str | None:
+    """מחזיר כתובת מייל לפי ערך 'הוקצה ל' (TASK_TEAM) מתוך TEAM_EMAILS."""
+    for key in TEAM_EMAILS:
+        if _assignee_matches_team_key(assignee, key):
+            em = TEAM_EMAILS.get(key)
+            if em and str(em).strip():
+                return str(em).strip()
+    return None
+
+
+def send_task_assignment_email_tali(
+    to_email: str,
+    project_label: str,
+    task_name: str,
+    task_description: str,
+    due_str: str,
+    assignee_name: str,
+    cc_emails: list[str] | None = None,
+) -> bool:
+    """
+    מייל על הקצאת משימה — כולל תיאור מלא (חשוב במיוחד למשימות מסוג 'אחר').
+    """
+    try:
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        sender_email = str(st.secrets["email_tali"]["sender_email"]).strip()
+        password = str(st.secrets["email_tali"]["password"]).strip()
+        if not smtp_server or not sender_email or not password:
+            st.error("חסרים נתוני אימייל ב-secrets (מקטע [email_tali])")
+            return False
+        to_clean = (to_email or "").strip()
+        if not to_clean:
+            st.warning("אין כתובת נמען תקינה לשליחת מייל משימה.")
+            return False
+        cc_clean = [e.strip() for e in (cc_emails or []) if e and str(e).strip() and str(e).strip() != to_clean]
+        desc = (task_description or "").strip()
+        name = (task_name or "").strip()
+        detail_for_email = desc if desc else name
+        html_body = f"""
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; direction: rtl;">
+<h2>🎯 משימה חדשה הוקצתה</h2>
+<table style="border-collapse: collapse;">
+<tr><td style="padding:6px;"><strong>פרויקט:</strong></td><td>{html.escape(project_label)}</td></tr>
+<tr><td style="padding:6px;vertical-align:top;"><strong>תיאור המשימה:</strong></td><td style="white-space:pre-wrap;">{html.escape(detail_for_email)}</td></tr>
+<tr><td style="padding:6px;"><strong>הוקצה ל:</strong></td><td>{html.escape(assignee_name)}</td></tr>
+<tr><td style="padding:6px;"><strong>תאריך יעד:</strong></td><td>{html.escape(due_str)}</td></tr>
+</table>
+<p>בהצלחה!</p>
+</body>
+</html>
+"""
+        plain_body = (
+            f"פרויקט: {project_label}\n"
+            f"תיאור המשימה: {detail_for_email}\n"
+            f"הוקצה ל: {assignee_name}\n"
+            f"תאריך יעד: {due_str}\n"
+        )
+        msg = EmailMessage()
+        subj_task = (name[:60] + "…") if len(name) > 63 else name
+        msg["Subject"] = f"משימה חדשה: {subj_task} — {project_label}"
+        msg["From"] = sender_email
+        msg["To"] = to_clean
+        if cc_clean:
+            msg["Cc"] = ", ".join(cc_clean)
+        msg.set_content(plain_body)
+        msg.add_alternative(html_body, subtype="html")
+
+        def _try_send(server) -> bool:
+            try:
+                server.send_message(msg)
+            except Exception as e:
+                st.warning(f"שגיאה בשליחת מייל משימה: {e}")
+                return False
+            return True
+
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                server.login(sender_email, password)
+                if not _try_send(server):
+                    return False
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(sender_email, password)
+                if not _try_send(server):
+                    return False
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        st.warning(f"שגיאת אימות SMTP במייל משימה: {e}")
+        return False
+    except Exception as e:
+        st.warning(f"שגיאה בשליחת מייל משימה: {e}")
+        return False
+
+
 # סיסמת מנהל (Admin)
 ADMIN_PASSWORD = "8484"
 # שמות/תפקידים שמוגדרים כמנהלים - לצורכי הרשאות וסינון תצוגה
@@ -777,6 +893,7 @@ TASK_TEAM = ["ערן", "טלי", "ג'ורג'", "מיה", "ליאור", "אור",
 TASKS_LOG_COLUMNS = [
     "פרויקט",
     "שם משימה",
+    "תיאור המשימה",
     "הוקצה ל",
     "תאריך התחלה",
     "תאריך יעד",
@@ -848,6 +965,26 @@ def _filter_tasks_by_status_and_date(
     # מיון: באיחור (תאריך < היום) ראשון, אחר כך היום
     result.sort(key=lambda x: (0 if x[1] < today_dt else 1, x[1]))
     return [r[0] for r in result]
+
+
+def _filter_tasks_open_not_done(
+    tasks: list[dict],
+    status_col: str = "סטטוס",
+    done_statuses: tuple[str, ...] = DONE_STATUSES,
+) -> list[dict]:
+    """
+    משימות פתוחות לפי סטטוס בלבד (לא מסנן תאריכי יעד עתידיים).
+    משמש את מוניטור תמונת המצב הצוותית כדי שמשימות שהוקצו יופיעו גם לפני תאריך היעד.
+    """
+    done_lower = {s.lower() for s in done_statuses}
+    result = []
+    for t in tasks:
+        status = (t.get(status_col) or "").strip().lower()
+        if status in done_lower:
+            continue
+        result.append(t)
+    return result
+
 
 def _is_done_daily(val) -> bool:
     """בודק אם משימה יומית סומנה כהושלמה (Is Done)."""
@@ -1496,6 +1633,7 @@ def write_projects(rows: list[dict], skip_rerun: bool = False) -> None:
 _TASKS_LEGACY_COL_MAP = {
     "Project": "פרויקט", "Task Name": "שם משימה", "Assignee": "הוקצה ל",
     "Start Date": "תאריך התחלה", "Due Date": "תאריך יעד", "Status": "סטטוס",
+    "Task Description": "תיאור המשימה",
 }
 
 
@@ -4960,51 +5098,78 @@ def show_tasks_page() -> None:
             with st.form("assign_task_form", clear_on_submit=True):
                 selected_project = st.selectbox("פרויקט", options=projects_options, key="assign_task_project")
                 task_type = st.selectbox("סוג משימה", options=TASK_TYPE_OPTIONS, key="assign_task_type")
+                if task_type == "אחר":
+                    st.text_input(
+                        "פרטי המשימה המיוחדת",
+                        key="assign_task_custom_detail",
+                        placeholder="תאר את המשימה — הטקסט יישמר בעמודת תיאור המשימה ויישלח במייל לצוות",
+                    )
                 assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
                 due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
                 submitted = st.form_submit_button("הקצה משימה 🚀")
 
             if submitted:
-                existing = read_tasks()
-                # סדר עמודות בדיוק: פרויקט, שם משימה, הוקצה ל, תאריך התחלה, תאריך יעד, סטטוס
-                row = {
-                    "פרויקט": selected_project,
-                    "שם משימה": task_type,
-                    "הוקצה ל": assignee,
-                    "תאריך התחלה": datetime.today().strftime("%Y-%m-%d"),
-                    "תאריך יעד": due_date.strftime("%Y-%m-%d"),
-                    "סטטוס": "ממתין",
-                }
-                existing.append(row)
-                write_tasks(existing, skip_rerun=True)
-                # Force fresh data fetch after saving to Google Sheet
-                st.cache_data.clear()
-                st.success("המשימה הוקצתה בהצלחה! ✅")
-                time.sleep(1)
-                st.rerun()
+                task_name: str | None = None
+                task_desc = ""
+                if task_type == "אחר":
+                    detail = (st.session_state.get("assign_task_custom_detail") or "").strip()
+                    if not detail:
+                        st.error("נא למלא «פרטי המשימה המיוחדת» כשבוחרים «אחר».")
+                    else:
+                        task_name = detail
+                        task_desc = detail
+                else:
+                    task_name = task_type
+                    task_desc = ""
+
+                if task_name is not None:
+                    existing = read_tasks()
+                    row = {
+                        "פרויקט": selected_project,
+                        "שם משימה": task_name,
+                        "תיאור המשימה": task_desc,
+                        "הוקצה ל": assignee,
+                        "תאריך התחלה": datetime.today().strftime("%Y-%m-%d"),
+                        "תאריך יעד": due_date.strftime("%Y-%m-%d"),
+                        "סטטוס": "ממתין",
+                    }
+                    existing.append(row)
+                    write_tasks(existing, skip_rerun=True)
+                    st.cache_data.clear()
+                    assignee_email = _team_email_for_task_assignee(assignee)
+                    if assignee_email:
+                        cc_list: list[str] = []
+                        for k in ("ערן", "טל"):
+                            em = TEAM_EMAILS.get(k)
+                            if em and str(em).strip() and str(em).strip() != assignee_email:
+                                cc_list.append(str(em).strip())
+                        send_task_assignment_email_tali(
+                            assignee_email,
+                            selected_project,
+                            task_name,
+                            task_desc,
+                            due_date.strftime("%d/%m/%Y"),
+                            assignee,
+                            cc_emails=cc_list,
+                        )
+                    else:
+                        st.warning(
+                            "המשימה נשמרה בגיליון, אך לא נמצאה כתובת מייל לנמען שנבחר — לא נשלח מייל לצוות."
+                        )
+                    st.success("המשימה הוקצתה בהצלחה! ✅")
+                    time.sleep(1)
+                    st.rerun()
 
     elif sub_nav == "מוניטור צוות (עדכון סטטוסים) 📋":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
         st.subheader("🎯 מוניטור סטודיו - תמונת מצב צוותית")
 
-        def _assignee_matches_task(task_assignee: str, sel: str) -> bool:
-            a = (task_assignee or "").strip()
-            return a == sel or a.startswith(sel + " ") or a.startswith(sel + "-")
-
+        # נתונים מ-read_tasks() (גיליון tasks בגוגל שיטס) — לא רשימה זמנית אחרת
         tasks_rows_monitor = read_tasks()
+        # משימות פתוחות: סטטוס לא הושלם; כולל תאריך יעד עתידי (בניגוד לטבלה למטה שמסננת לפי תאריך)
+        open_tasks = _filter_tasks_open_not_done(tasks_rows_monitor)
+
         today_dt = date.today()
-        # סינון חכם: סטטוס לא בוצע, תאריך <= היום. מיון: באיחור ראשון, אחר כך היום.
-        open_tasks = _filter_tasks_by_status_and_date(
-            tasks_rows_monitor, date_col="תאריך יעד", status_col="סטטוס"
-        )
-        # משתמש שאינו מנהל - זמנית מציגים הכל (ביטול סינון לפי Assignee)
-        # if not is_admin():
-        #     current_user = _get_assignee_for_current_user()
-        #     open_tasks = [t for t in open_tasks if _assignee_matches_task(t.get("Assignee") or "", current_user)]
-        df_tasks = pd.DataFrame(open_tasks) if open_tasks else pd.DataFrame()
-        due_col = df_tasks.get("תאריך יעד") if not df_tasks.empty else None
-        if due_col is not None:
-            df_tasks["due_date_parsed"] = pd.to_datetime(due_col, errors="coerce").dt.date
 
         def _get_task_due_date(task: dict) -> date | None:
             due_str = task.get("תאריך יעד") or ""
@@ -5027,17 +5192,31 @@ def show_tasks_page() -> None:
             time.sleep(1)
             st.rerun()
 
-        team_list = [n for n in TEAM_DISPLAY_NAMES if n and str(n).strip()]
-        for assignee in team_list:
+        for assignee in TEAM_EMAILS.keys():
             user_tasks = [
-                t for t in open_tasks
-                if _assignee_matches_task(t.get("הוקצה ל") or "", assignee)
+                t
+                for t in open_tasks
+                if _assignee_matches_team_key(t.get("הוקצה ל") or "", assignee)
             ]
             try:
-                with st.expander(f"👤 {assignee} | משימות פתוחות: {len(user_tasks)}", expanded=False):
+                with st.expander(
+                    f"{assignee} | משימות פתוחות: {len(user_tasks)}",
+                    expanded=False,
+                ):
                     if not user_tasks:
-                        st.success("השולחן נקי!")
+                        st.info("אין משימות פתוחות")
                     else:
+                        display_cols = [
+                            c
+                            for c in ("פרויקט", "שם משימה", "תיאור המשימה", "תאריך יעד", "סטטוס")
+                            if c in TASKS_LOG_COLUMNS
+                        ]
+                        df_show = pd.DataFrame(user_tasks)
+                        for c in display_cols:
+                            if c not in df_show.columns:
+                                df_show[c] = ""
+                        df_show = df_show.reindex(columns=display_cols, fill_value="").fillna("")
+                        st.dataframe(df_show, use_container_width=True, hide_index=True)
                         for idx, r in enumerate(user_tasks):
                             task_name = (r.get("שם משימה") or "").strip()
                             project = (r.get("פרויקט") or "").strip()
@@ -5045,7 +5224,10 @@ def show_tasks_page() -> None:
                             due_parsed = _get_task_due_date(r)
                             col_btn, col_msg = st.columns([0.12, 0.88])
                             with col_btn:
-                                if st.button("✅ סמן כבוצע", key=f"monitor_done_{assignee}_{idx}_{hash(str(r))}"):
+                                if st.button(
+                                    "✅ סמן כבוצע",
+                                    key=f"monitor_done_{assignee}_{idx}_{hash(str(r))}",
+                                ):
                                     _mark_task_done_monitor(r)
                             with col_msg:
                                 if due_parsed is None or due_parsed < today_dt:
