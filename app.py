@@ -9,6 +9,8 @@ import shutil
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 import os
 import csv
@@ -1211,32 +1213,43 @@ def send_quote_email_via_smtp(
             st.error("חסרה כתובת אימייל ללקוח.")
             return False
 
-        if "final_pdf_bytes" not in st.session_state or not st.session_state["final_pdf_bytes"]:
-            st.error("הקובץ לא קיים בזיכרון. אנא שמור את ההצעה מחדש.")
-            st.stop()
-
-        msg = EmailMessage()
-        msg["Subject"] = subject
+        msg = MIMEMultipart()
         msg["From"] = sender_email
         msg["To"] = to_email
+        msg["Subject"] = subject
         if cc_list:
             msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
-        msg.set_content(body)
-        recipients = [to_email] + [c.strip() for c in (cc_list or []) if c and str(c).strip()]
-        pdf_attachment = MIMEApplication(st.session_state["final_pdf_bytes"], _subtype="pdf")
-        pdf_attachment.add_header(
-            "Content-Disposition", "attachment", filename="Quote_Studio84.pdf"
-        )
-        msg.attach(pdf_attachment)
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
-                smtp.login(sender_email, password)
-                smtp.send_message(msg, to_addrs=recipients)
+        msg.attach(MIMEText(body, "plain"))
+
+        if "final_pdf_bytes" in st.session_state:
+            try:
+                pdf_attachment = MIMEApplication(
+                    st.session_state["final_pdf_bytes"], _subtype="pdf"
+                )
+                pdf_attachment.add_header(
+                    "Content-Disposition",
+                    "attachment",
+                    filename="Quote_Studio84.pdf",
+                )
+                msg.attach(pdf_attachment)
+            except Exception as e:
+                st.error(f"שגיאה בצירוף הקובץ לאובייקט המייל: {e}")
+                st.stop()
         else:
-            with smtplib.SMTP(smtp_server, smtp_port) as smtp:
-                smtp.starttls()
-                smtp.login(sender_email, password)
-                smtp.send_message(msg, to_addrs=recipients)
+            st.error(
+                "שגיאה: קובץ ה-PDF לא נמצא בזיכרון. אנא שמור את ההצעה מחדש."
+            )
+            st.stop()
+
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                server.login(sender_email, password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(sender_email, password)
+                server.send_message(msg)
         return True
     except smtplib.SMTPAuthenticationError as e:
         st.error(f"שגיאת אימות SMTP: {e}")
