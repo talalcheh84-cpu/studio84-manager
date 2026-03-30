@@ -665,6 +665,8 @@ TEAM_MEMBERS = {
     'אחיעד - תלת מימד': 'achiad@studio84.co.il',
     'אור - עורך ובמאי': 'or@studio84.co.il',
     "ג׳ורג׳ - תלת מימד": 'George.berdichevsky@gmail.com',
+    'מודליסט 1': 'lior@studio84.co.il',
+    'מודליסט 2': 'achiad@studio84.co.il',
 }
 # שמות קצרים לתצוגה (ללא תפקידים) - משמש ב-selectbox, multiselect, וטקסט המייל
 TEAM_DISPLAY_NAMES = [name.split('-')[0].strip() for name in TEAM_MEMBERS.keys()]
@@ -940,9 +942,8 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
         )
         try:
             dbx.users_get_current_account()
-        except Exception as e:
-            st.error(f"🚨 שגיאת התחברות לדרופבוקס (הטוקן בכספת לא תקין): {e}")
-            return "", "", ""
+        except Exception:
+            return None
 
         # Dropbox Business - שורש ל-Team Space במקום Member Space
         path_root = None
@@ -1031,7 +1032,7 @@ def create_studio_dropbox_structure(project_name: str) -> tuple[str, str, str] |
 
         return (main_link, upload_link, deliverables_link)
     except Exception:
-        raise
+        return None
 
 
 def create_dropbox_folder_and_link(project_name: str, folder_path: str | None = None) -> str | None:
@@ -1632,6 +1633,25 @@ def _safe_link(val: str) -> str:
     return str(val).strip()
 
 
+def find_project_dropbox_links_for_client(client: str, project_name: str) -> tuple[str, str, str]:
+    """קישורי דרופבוקס לפרויקט לפי לקוח ושם פרויקט (גיליון projects)."""
+    c = (client or "").strip()
+    p = (project_name or "").strip()
+    if not c or not p:
+        return ("", "", "")
+    for r in read_projects():
+        if (r.get("Client") or "").strip() != c:
+            continue
+        if (r.get("Project Name") or "").strip() != p:
+            continue
+        return (
+            (r.get("Dropbox_Main") or "").strip(),
+            (r.get("Dropbox_Upload") or "").strip(),
+            (r.get("Dropbox_Deliverables") or "").strip(),
+        )
+    return ("", "", "")
+
+
 def append_project_record(
     client: str,
     project_name: str,
@@ -2029,11 +2049,13 @@ def convert_quote_to_project(
     version: str,
     *,
     log_row: dict | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, tuple[str, str, str], bool]:
     """
     המרת הצעת מחיר מאושרת לפרויקט פעיל.
-    מבצע: משיכת נתונים, יצירת שורה ב-projects, תיקיות דרופבוקס, שליחת מייל, עדכון סטטוס הצעה.
-    מחזיר (הצלחה, הודעת שגיאה).
+    מבצע: משיכת נתונים, יצירת שורה ב-projects, תיקיות דרופבוקס (אם אפשר), עדכון סטטוס הצעה.
+    מייל התנעה נשלח מהממשק בנפרד.
+    מחזיר (הצלחה, הודעת שגיאה, קישורי דרופבוקס שנשמרו, dropbox_failed).
+    dropbox_failed=True כשיצירת תיקיות/לינקים בדרופבוקס נכשלה (למשל טוקן פג תוקף).
     """
     try:
         # א. משיכת נתוני הצעת המחיר — לפי שורת ניהול מלאה (תאריך+מפתח) כדי לא לבלבל בין כפילויות Client/Project/Version
@@ -2042,27 +2064,37 @@ def convert_quote_to_project(
         else:
             full_row = get_quote_from_csv(client, project, version)
         if not full_row:
-            return False, "ההצעה לא נמצאה במערכת."
+            return False, "ההצעה לא נמצאה במערכת.", ("", "", ""), True
         client_name = (full_row.get("Client") or "").strip()
         project_name = (full_row.get("Project") or "").strip()
         total_amount = _extract_total_from_quote_row(full_row)
         total_str = f"{total_amount:.2f}" if total_amount else ""
         if not client_name or not project_name:
-            return False, "חסרים שם לקוח או שם פרויקט בהצעה."
+            return False, "חסרים שם לקוח או שם פרויקט בהצעה.", ("", "", ""), True
         status = (full_row.get("Status") or "").strip()
         if status == "הומר לפרויקט":
-            return False, "ההצעה כבר הומרה לפרויקט בעבר."
+            return False, "ההצעה כבר הומרה לפרויקט בעבר.", ("", "", ""), True
         if not _status_allows_convert_to_project(status):
-            return False, f"ניתן להמיר רק הצעות בסטטוס 'אושר' או 'חתום'. הסטטוס הנוכחי: {status}"
+            return (
+                False,
+                f"ניתן להמיר רק הצעות בסטטוס 'אושר' או 'חתום'. הסטטוס הנוכחי: {status}",
+                ("", "", ""),
+                True,
+            )
 
         today_str = date.today().strftime("%d/%m/%Y")
         dropbox_project_id = f"{client_name}_{project_name}".replace(" ", "_")
 
-        # ב. יצירת שורה חדשה בגיליון projects
-        result = create_studio_dropbox_structure(dropbox_project_id)
-        if not result:
-            return False, "יצירת תיקיות הדרופבוקס נכשלה."
-        main_link, upload_link, deliverables_link = result
+        main_link, upload_link, deliverables_link = "", "", ""
+        dropbox_failed = False
+        try:
+            result = create_studio_dropbox_structure(dropbox_project_id)
+            if result is None:
+                dropbox_failed = True
+            else:
+                main_link, upload_link, deliverables_link = result
+        except Exception:
+            dropbox_failed = True
 
         append_project_record(
             client=client_name,
@@ -2078,18 +2110,6 @@ def convert_quote_to_project(
             skip_rerun=True,
         )
 
-        # ד. שליחת מייל לצוות
-        ok = send_kickoff_email(
-            project_name=project_name,
-            client=client_name,
-            deadline_str=today_str,
-            main_link=main_link,
-            upload_link=upload_link,
-            deliverables_link=deliverables_link,
-        )
-        if not ok:
-            pass  # לא נכשל - הפרויקט נוצר, המייל הוא בונוס
-
         # ה. עדכון סטטוס הצעת המחיר
         updated = {c: (full_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
         updated["Status"] = "הומר לפרויקט"
@@ -2099,11 +2119,100 @@ def convert_quote_to_project(
             full_row.get("Version", ""),
             updated,
         ):
-            return False, "לא ניתן לעדכן את סטטוס ההצעה."
+            return False, "לא ניתן לעדכן את סטטוס ההצעה.", (main_link, upload_link, deliverables_link), dropbox_failed
 
-        return True, ""
+        return True, "", (main_link, upload_link, deliverables_link), dropbox_failed
     except Exception as e:
-        return False, str(e)
+        return False, str(e), ("", "", ""), True
+
+
+def send_project_kickoff_email_eran(
+    to_emails: list[str],
+    project_name: str,
+    client: str,
+    deadline_str: str,
+    main_link: str = "",
+    upload_link: str = "",
+    deliverables_link: str = "",
+    brief_notes: str = "",
+) -> bool:
+    """
+    מייל התנעת פרויקט לנמענים שנבחרו — אותה לוגיקת SMTP כמו send_quote_email_via_smtp (פרופיל email_eran).
+    """
+    try:
+        email_eran = dict(st.secrets.get("email_eran", {}) or {})
+        smtp_server = (email_eran.get("smtp_server") or "").strip()
+        smtp_port = int(email_eran.get("smtp_port", 465))
+        sender_email = (email_eran.get("sender_email") or "").strip()
+        password = (email_eran.get("password") or "").strip()
+        if not smtp_server or not sender_email or not password:
+            st.error("חסרים נתוני אימייל ב-secrets (מקטע [email_eran])")
+            return False
+        cleaned = [e.strip() for e in (to_emails or []) if e and str(e).strip()]
+        if not cleaned:
+            st.warning("אין כתובות נמען תקינות.")
+            return False
+        links_html = []
+        if main_link and main_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(main_link)}">📂 תיקייה ראשית</a></li>')
+        if upload_link and upload_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(upload_link)}">📥 בקשת חומרים (העלאה ללקוח)</a></li>')
+        if deliverables_link and deliverables_link.startswith("http"):
+            links_html.append(f'<li><a href="{html.escape(deliverables_link)}">📤 תיקיית תוצרים</a></li>')
+        links_section = f"<ul>{''.join(links_html)}</ul>" if links_html else "<p>קישורי דרופבוקס לא זמינים.</p>"
+        brief_block = ""
+        if (brief_notes or "").strip():
+            brief_block = (
+                f'<h3>בריף / הערות</h3><p style="white-space:pre-wrap;">'
+                f"{html.escape(brief_notes.strip())}</p>"
+            )
+        html_body = f"""
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, sans-serif; direction: rtl;">
+<h2>🚀 התנעת פרויקט וחלוקת משימות</h2>
+<table style="border-collapse: collapse;">
+<tr><td style="padding:6px;"><strong>פרויקט:</strong></td><td>{html.escape(project_name)}</td></tr>
+<tr><td style="padding:6px;"><strong>לקוח:</strong></td><td>{html.escape(client)}</td></tr>
+<tr><td style="padding:6px;"><strong>דדליין:</strong></td><td>{html.escape(deadline_str)}</td></tr>
+</table>
+<h3>לינקים לתיקיות הדרופבוקס</h3>
+{links_section}
+{brief_block}
+<p>בהצלחה!</p>
+</body>
+</html>
+"""
+        plain_links = f"{main_link}\n{upload_link}\n{deliverables_link}"
+        plain_brief = f"\n\nבריף:\n{brief_notes.strip()}" if (brief_notes or "").strip() else ""
+        msg = EmailMessage()
+        msg["Subject"] = f"התנעת פרויקט: {project_name} - {client}"
+        msg["From"] = sender_email
+        msg["To"] = ", ".join(cleaned)
+        msg.set_content(
+            f"פרויקט: {project_name}\nלקוח: {client}\nדדליין: {deadline_str}\n\nלינקים:\n{plain_links}{plain_brief}"
+        )
+        msg.add_alternative(html_body, subtype="html")
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
+                smtp.login(sender_email, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port) as smtp:
+                smtp.starttls()
+                smtp.login(sender_email, password)
+                smtp.send_message(msg)
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        st.error(f"שגיאת אימות SMTP: {e}")
+        return False
+    except smtplib.SMTPException as e:
+        st.error(f"שגיאת SMTP: {e}")
+        return False
+    except Exception as e:
+        st.error(f"שגיאה בשליחת המייל: {e}")
+        return False
 
 
 def build_mailto_link(to: str, cc_list, subject: str, body: str) -> str:
@@ -3432,8 +3541,8 @@ def show_quotes_management_page() -> None:
                     client_c = (sel.get("Client") or "").strip()
                     project_c = (sel.get("Project") or "").strip()
                     version_c = (sel.get("Version") or "").strip() or "V1"
-                    with st.spinner("מייצר פרויקט, תיקיות דרופבוקס ומייל לצוות..."):
-                        ok, err = convert_quote_to_project(
+                    with st.spinner("מייצר פרויקט ותיקיות דרופבוקס..."):
+                        ok, err, _links_tuple, dropbox_failed = convert_quote_to_project(
                             client_c,
                             project_c,
                             version_c,
@@ -3441,12 +3550,95 @@ def show_quotes_management_page() -> None:
                         )
                     if ok:
                         st.cache_data.clear()
-                        st.success("ההצעה מוכנה להמרה!")
-                        st.success("🎉 הפרויקט הוקם בהצלחה! המייל נשלח לצוות.")
+                        if dropbox_failed:
+                            st.warning(
+                                "תיקיות דרופבוקס לא נוצרו עקב שגיאת התחברות (למשל טוקן פג תוקף). "
+                                "הסטטוס עודכן ל'הומר לפרויקט' והפרויקט נוסף לרשימה."
+                            )
+                        else:
+                            st.success("הפרויקט הוקם בהצלחה. הסטטוס עודכן ל'הומר לפרויקט'.")
+                        st.session_state["quote_mgmt_kickoff_default_key"] = selected_convert_key
                         time.sleep(1.5)
                         st.rerun()
                     else:
                         st.error(f"שגיאה בהמרה: {err}")
+
+        # --- התנעת פרויקט (הצעות במצב 'הומר לפרויקט') ---
+        converted_kickoff = []
+        for _, r in edited_df.iterrows():
+            row_dict = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+            if (row_dict.get("Status") or "").strip() == "הומר לפרויקט":
+                row_key = _quote_log_row_unique_key(row_dict)
+                v = (row_dict.get("Version") or "").strip() or "1"
+                lbl = f"{row_dict.get('Date', '')} | {row_dict.get('Client', '')} | {row_dict.get('Project', '')} | גרסה: {v}"
+                converted_kickoff.append((row_key, lbl, row_dict))
+
+        if converted_kickoff:
+            st.divider()
+            st.markdown("### 🚀 התנעת פרויקט וחלוקת משימות לצוות")
+            kickoff_labels = {k: lbl for k, lbl, _ in converted_kickoff}
+            kickoff_keys = [k for k, _, _ in converted_kickoff]
+            default_ix = 0
+            dk_pending = st.session_state.pop("quote_mgmt_kickoff_default_key", None)
+            if dk_pending is not None and dk_pending in kickoff_keys:
+                default_ix = kickoff_keys.index(dk_pending)
+            default_ix = min(default_ix, max(0, len(kickoff_keys) - 1))
+            selected_kickoff_key = st.selectbox(
+                "בחר הצעה לתיאום התנעה והודעה לצוות",
+                options=kickoff_keys,
+                format_func=lambda k: kickoff_labels.get(k, str(k)),
+                index=default_ix,
+                key="quote_mgmt_kickoff_select",
+            )
+            sel_k = next((rd for k, _, rd in converted_kickoff if k == selected_kickoff_key), None)
+            if sel_k is not None:
+                k_client = (sel_k.get("Client") or "").strip()
+                k_project = (sel_k.get("Project") or "").strip()
+                k_main, k_upload, k_del = find_project_dropbox_links_for_client(k_client, k_project)
+                st.markdown("**קישורי דרופבוקס**")
+                if (k_main and k_main.startswith("http")) or (k_upload and k_upload.startswith("http")) or (
+                    k_del and k_del.startswith("http")
+                ):
+                    col_k1, col_k2, col_k3 = st.columns(3)
+                    if k_main and k_main.startswith("http"):
+                        col_k1.link_button("📂 תיקייה ראשית", k_main)
+                    if k_upload and k_upload.startswith("http"):
+                        col_k2.link_button("📥 בקשת חומרים", k_upload)
+                    if k_del and k_del.startswith("http"):
+                        col_k3.link_button("📤 תיקיית תוצרים", k_del)
+                else:
+                    st.caption("לא נוצרו קישורי דרופבוקס לפרויקט זה (או שנכשלו בעת ההמרה).")
+
+                kickoff_recipients = st.multiselect(
+                    "נמעני מייל (צוות)",
+                    options=TEAM_DISPLAY_NAMES,
+                    default=[],
+                    key="quote_mgmt_kickoff_recipients",
+                )
+                kickoff_brief = st.text_area(
+                    "בריף / הערות למשימה",
+                    key="quote_mgmt_kickoff_brief",
+                    placeholder="הערות לצוות...",
+                )
+                if st.button("שלח מייל התנעה לצוות", key="quote_mgmt_kickoff_send", type="primary"):
+                    addr_list = [TEAM_EMAIL_BY_SHORT.get(name, "").strip() for name in (kickoff_recipients or [])]
+                    addr_list = [a for a in addr_list if a]
+                    if not addr_list:
+                        st.warning("בחרו לפחות נמען אחד עם כתובת מייל מוגדרת.")
+                    else:
+                        deadline_k = date.today().strftime("%d/%m/%Y")
+                        sent_ok = send_project_kickoff_email_eran(
+                            addr_list,
+                            k_project,
+                            k_client,
+                            deadline_k,
+                            k_main,
+                            k_upload,
+                            k_del,
+                            kickoff_brief or "",
+                        )
+                        if sent_ok:
+                            st.success("המייל נשלח לצוות.")
 
         # --- בחירת הצעה למחיקה ---
         st.subheader("מחיקת הצעה")
