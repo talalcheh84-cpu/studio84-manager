@@ -3603,9 +3603,19 @@ def show_quotes_management_page() -> None:
                 else:
                     st.caption("לא נוצרו קישורי דרופבוקס לפרויקט זה (או שנכשלו בעת ההמרה).")
 
+                team_emails = {
+                    "טלי": "talalcheh84@gmail.com",
+                    "ערן": "eran@studio84.co.il",
+                    "מיה ": "maya@studio84.co.il",
+                    "ליאור": "lior@studio84.co.il",
+                    "אחיעד": "achiad@studio84.co.il",
+                    "אור": "or@studio84.co.il",
+                    "ג׳ורג׳": "George.berdichevsky@gmail.com",
+                    "הנהלת חשבונות": "accounts@studio84.co.il",
+                }
                 kickoff_recipients = st.multiselect(
                     "נמעני מייל (צוות)",
-                    options=TEAM_DISPLAY_NAMES,
+                    options=list(team_emails.keys()),
                     default=[],
                     key="quote_mgmt_kickoff_recipients",
                 )
@@ -3615,17 +3625,6 @@ def show_quotes_management_page() -> None:
                     placeholder="הערות לצוות...",
                 )
                 if st.button("שלח מייל התנעה לצוות", key="quote_mgmt_kickoff_send", type="primary"):
-                    # מיפוי שם מה-multiselect לכתובת (החליפו את ה-placeholders בכתובות אמיתיות)
-                    team_emails = {
-                        "טלי": "talalcheh84@gmail.com",
-                        "ערן": "eran@studio84.co.il",
-                        "מיה ": "maya@studio84.co.il",
-                        "ליאור": "lior@studio84.co.il",
-                        "אחיעד": "achiad@studio84.co.il",
-                        "אור": "or@studio84.co.il",
-                        "ג׳ורג׳": "George.berdichevsky@gmail.com",
-                        "הנהלת חשבונות": "accounts@studio84.co.il",
-                    }
                     actual_emails_list = []
                     seen = set()
                     for name in kickoff_recipients or []:
