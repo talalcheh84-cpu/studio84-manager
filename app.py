@@ -1190,24 +1190,8 @@ def send_kickoff_email(
 
 
 def _get_quote_smtp_config(smtp_profile: str) -> dict:
-    """smtp_profile: 'tali' (שליחה כטלי / Gmail) או 'eran' (Webmail / ערן)."""
-    if smtp_profile == "tali":
-        v = st.secrets.get("email_tali")
-        if isinstance(v, dict):
-            return dict(v)
-        cfg = dict(st.secrets.get("email", {}) or {})
-        if isinstance(v, str) and v.strip():
-            cfg = dict(cfg)
-            cfg["sender_email"] = v.strip()
-        return cfg
-    v = st.secrets.get("email_eran")
-    if isinstance(v, dict):
-        return dict(v)
-    cfg = dict(st.secrets.get("email", {}) or {})
-    if isinstance(v, str) and v.strip():
-        cfg = dict(cfg)
-        cfg["sender_email"] = v.strip()
-    return cfg
+    """נתוני SMTP ממקטע [email] ב-secrets (כמו send_kickoff_email). smtp_profile נשמר לתאימות קריאה."""
+    return dict(st.secrets.get("email", {}) or {})
 
 
 def send_quote_email_via_smtp(
@@ -1229,7 +1213,7 @@ def send_quote_email_via_smtp(
         password = (email_config.get("password") or "").strip()
         if not smtp_server or not sender_email or not password:
             st.error(
-                "חסרים נתוני אימייל ב-secrets (לטלי: email_tali או email; לערן: email_eran או email: smtp_server, sender_email, password)"
+                "חסרים נתוני אימייל ב-secrets (במקטע [email]: smtp_server, sender_email, password)"
             )
             return False
         to_email = (to_email or "").strip()
@@ -3206,12 +3190,8 @@ def show_quote_page() -> None:
             "בברכה,\n"
             "סטודיו 84"
         )
-        email_tali = st.secrets.get("email_tali", EMAIL_MYSELF)
-        email_eran_addr = st.secrets.get("email_eran", EMAIL_ERAN)
-        if isinstance(email_eran_addr, dict):
-            email_eran_addr = (email_eran_addr.get("sender_email") or EMAIL_ERAN) or ""
-        email_tali_str = str(email_tali).strip() if email_tali else EMAIL_MYSELF
-        email_eran_str = str(email_eran_addr).strip() if email_eran_addr else EMAIL_ERAN
+        email_tali_str = EMAIL_MYSELF
+        email_eran_str = EMAIL_ERAN
         cc_base = [EMAIL_ACCOUNTING]
         file_ready = CURRENT_QUOTE_TEMP_PDF.exists()
         if file_ready:
