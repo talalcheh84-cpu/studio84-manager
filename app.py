@@ -1,4 +1,3 @@
-import base64
 import html
 import io
 import re
@@ -3177,11 +3176,6 @@ def show_quote_page() -> None:
 
         # --- אזור תצוגה מקדימה ושליחה 📨 ---
         st.subheader("תצוגה מקדימה ושליחה 📨")
-        if 'pdf_bytes' in st.session_state and st.session_state['pdf_bytes']:
-            st.markdown('### תצוגה מקדימה של המסמך:')
-            base64_pdf = base64.b64encode(st.session_state['pdf_bytes']).decode('utf-8')
-            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
         project_name_mail = st.session_state.get("current_project_name", "")
         quote_version_mail = st.session_state.get("current_quote_version", "")
         contact_person_mail = st.session_state.get("current_contact_person", "")
@@ -3202,9 +3196,19 @@ def show_quote_page() -> None:
             st.success("📎 הקובץ מצורף ומוכן לשליחה ללקוח")
         else:
             st.warning("⚠️ הקובץ לצירוף לא נמצא – ודא שההצעה נשמרה או הורד את הקובץ מחדש")
+        if file_ready:
+            st.download_button(
+                label="📥 הורד והצג את ה-PDF לפני שליחה (current_quote_temp.pdf)",
+                data=CURRENT_QUOTE_TEMP_PDF.read_bytes(),
+                file_name="current_quote_temp.pdf",
+                mime="application/pdf",
+                key="preview_quote_temp_pdf_download",
+            )
+        else:
+            st.caption("לאחר שמירת ההצעה יופיע כאן כפתור להורדת ה-PDF לבדיקה.")
         st.caption("תצוגה מקדימה של המייל:")
-        st.text_area("נושא", value=email_subject, height=30, key="quote_email_preview_subject", disabled=True)
-        st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body", disabled=True)
+        st.text_input("נושא", value=email_subject, key="quote_email_preview_subject")
+        st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body")
         send_via = st.radio(
             "בחר שיטת שליחה",
             ["שליחה מ-Gmail (טלי)", "שליחה מ-Webmail (ערן)"],
@@ -3224,8 +3228,10 @@ def show_quote_page() -> None:
                     with st.spinner("שולח מייל..."):
                         ok = send_quote_email_via_smtp(
                             client_email_mail,
-                            email_subject,
-                            email_body,
+                            st.session_state.get(
+                                "quote_email_preview_subject", email_subject
+                            ),
+                            st.session_state.get("quote_email_preview_body", email_body),
                             cc_list=cc_list,
                             smtp_profile="tali",
                         )
@@ -3245,8 +3251,10 @@ def show_quote_page() -> None:
                     with st.spinner("שולח מייל..."):
                         ok = send_quote_email_via_smtp(
                             client_email_mail,
-                            email_subject,
-                            email_body,
+                            st.session_state.get(
+                                "quote_email_preview_subject", email_subject
+                            ),
+                            st.session_state.get("quote_email_preview_body", email_body),
                             cc_list=cc_list,
                             smtp_profile="eran",
                         )
@@ -3276,6 +3284,8 @@ def show_quote_page() -> None:
                 "pdf_bytes_for_email",
                 "pdf_bytes",
                 "final_pdf_bytes",
+                "quote_email_preview_subject",
+                "quote_email_preview_body",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
