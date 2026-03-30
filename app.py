@@ -2157,15 +2157,25 @@ def send_project_kickoff_email_eran(
 </body>
 </html>
 """
-        plain_links = f"{main_link}\n{upload_link}\n{deliverables_link}"
-        plain_brief = f"\n\nבריף:\n{brief_notes.strip()}" if (brief_notes or "").strip() else ""
+        def _kickoff_plain_link(url: str) -> str:
+            u = (url or "").strip()
+            return u if u.startswith("http") else "(לא זמין)"
+
+        brief_text = (brief_notes or "").strip()
+        email_body = (
+            "היי צוות, מצורף בריף וקובץ הצעת מחיר.\n"
+            f"הערות למשימה: {brief_text if brief_text else '(ללא)'}\n\n"
+            "קישורי דרופבוקס לעבודה:\n"
+            f"📁 תיקייה ראשית: {_kickoff_plain_link(main_link)}\n"
+            f"📥 בקשת חומרים: {_kickoff_plain_link(upload_link)}\n"
+            f"📤 תוצרים: {_kickoff_plain_link(deliverables_link)}\n\n"
+            "בהצלחה!"
+        )
         msg = EmailMessage()
         msg["Subject"] = f"התנעת פרויקט: {project_name} - {client}"
         msg["From"] = sender_email
         msg["To"] = ", ".join(cleaned)
-        msg.set_content(
-            f"פרויקט: {project_name}\nלקוח: {client}\nדדליין: {deadline_str}\n\nלינקים:\n{plain_links}{plain_brief}"
-        )
+        msg.set_content(email_body)
         msg.add_alternative(html_body, subtype="html")
         if smtp_port == 465:
             with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
