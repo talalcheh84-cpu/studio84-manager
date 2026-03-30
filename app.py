@@ -2177,15 +2177,27 @@ def send_project_kickoff_email_eran(
         msg["To"] = ", ".join(cleaned)
         msg.set_content(email_body)
         msg.add_alternative(html_body, subtype="html")
+
+        def _kickoff_try_send(server) -> bool:
+            try:
+                server.send_message(msg)
+            except Exception as e:
+                st.error(f"שגיאה בשליחת המייל: {e}")
+                return False
+            st.success("המייל נשלח לצוות.")
+            return True
+
         if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
-                smtp.login(sender_email, password)
-                smtp.send_message(msg)
+            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                server.login(sender_email, password)
+                if not _kickoff_try_send(server):
+                    return False
         else:
-            with smtplib.SMTP(smtp_server, smtp_port) as smtp:
-                smtp.starttls()
-                smtp.login(sender_email, password)
-                smtp.send_message(msg)
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(sender_email, password)
+                if not _kickoff_try_send(server):
+                    return False
         return True
     except smtplib.SMTPAuthenticationError as e:
         st.error(f"שגיאת אימות SMTP: {e}")
@@ -3603,14 +3615,34 @@ def show_quotes_management_page() -> None:
                     placeholder="הערות לצוות...",
                 )
                 if st.button("שלח מייל התנעה לצוות", key="quote_mgmt_kickoff_send", type="primary"):
-                    addr_list = [TEAM_EMAIL_BY_SHORT.get(name, "").strip() for name in (kickoff_recipients or [])]
-                    addr_list = [a for a in addr_list if a]
-                    if not addr_list:
-                        st.warning("בחרו לפחות נמען אחד עם כתובת מייל מוגדרת.")
+                    # מיפוי שם מה-multiselect לכתובת (החליפו את ה-placeholders בכתובות אמיתיות)
+                    team_emails = {
+                        "טלי": "talalcheh84@gmail.com",
+                        "ערן": "eran@studio84.co.il",
+                        "מיה ": "maya@studio84.co.il",
+                        "ליאור": "lior@studio84.co.il",
+                        "אחיעד": "achiad@studio84.co.il",
+                        "אור": "or@studio84.co.il",
+                        "ג׳ורג׳": "George.berdichevsky@gmail.com",
+                        "הנהלת חשבונות": "accounts@studio84.co.il",
+                    }
+                    actual_emails_list = []
+                    seen = set()
+                    for name in kickoff_recipients or []:
+                        em = team_emails.get(name)
+                        if em and str(em).strip():
+                            addr = str(em).strip()
+                            if addr not in seen:
+                                seen.add(addr)
+                                actual_emails_list.append(addr)
+                    if not actual_emails_list:
+                        st.warning(
+                            "לא נמצאו כתובות מייל: בחרו חברי צוות שמופיעים במילון, או הוסיפו את השם והכתובת ב-team_emails."
+                        )
                     else:
                         deadline_k = date.today().strftime("%d/%m/%Y")
-                        sent_ok = send_project_kickoff_email_eran(
-                            addr_list,
+                        send_project_kickoff_email_eran(
+                            actual_emails_list,
                             k_project,
                             k_client,
                             deadline_k,
@@ -3619,8 +3651,6 @@ def show_quotes_management_page() -> None:
                             k_del,
                             kickoff_brief or "",
                         )
-                        if sent_ok:
-                            st.success("המייל נשלח לצוות.")
 
         # --- בחירת הצעה למחיקה ---
         st.subheader("מחיקת הצעה")
