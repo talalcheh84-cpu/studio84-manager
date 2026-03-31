@@ -776,6 +776,17 @@ def _assignee_cell_matches_login(task_assignee: str, selected_user: str) -> bool
     return False
 
 
+def _task_row_matches_view_filter(task: dict, view_filter: str) -> bool:
+    """סינון תצוגת משימות לפי אחראי — 'הצג הכל' מציג הכל; לא משנה current_user או הרשאות."""
+    vf = (view_filter or "").strip()
+    if not vf or vf == "הצג הכל":
+        return True
+    cell = task.get("הוקצה ל") or ""
+    if _assignee_matches_team_key(cell, vf):
+        return True
+    return _assignee_cell_matches_login(cell, vf)
+
+
 def _assignee_matches_team_key(task_assignee: str, team_key: str) -> bool:
     """התאמת 'הוקצה ל' למפתח ב-TEAM_EMAILS: טל/טלי + איחוד גרש (ג'ורג' / ג׳ורג׳)."""
     if _assignee_cell_matches_login(task_assignee, team_key):
@@ -5064,16 +5075,12 @@ def show_monitor_3d_page() -> None:
     st.subheader("תרשים גאנט וטבלת משימות")
     is_management = st.session_state.get("is_management", False)
     current_user = (st.session_state.get("current_user") or "").strip()
+    view_filter = (st.session_state.get("view_filter") or "").strip()
 
-    if is_management:
-        task_assignee_filter = st.selectbox(
-            "סינון לפי איש צוות / אחראי",
-            options=["הכל"] + list(TEAM_EMAILS.keys()),
-            key="monitor_3d_task_assignee_filter",
-        )
-    else:
+    if not is_management:
         st.caption(f"מוצגות רק משימות שבהן **איש צוות / אחראי** הוא **{current_user}**.")
-        task_assignee_filter = None
+    elif view_filter and view_filter != "הצג הכל":
+        st.caption(f"תצוגת מנהל: מוצגות משימות של **{view_filter}** (סינון תצוגה בלבד).")
 
     tasks_rows_raw = read_tasks()
     TASK_EXCLUDED_STATUSES = ("הסתיים", "בוטל")
@@ -5083,19 +5090,13 @@ def show_monitor_3d_page() -> None:
         if (t.get("סטטוס") or "").strip().lower() not in task_excluded_lower
     ]
 
-    if not is_management:
-        if current_user:
-            active_tasks = [
-                t for t in active_tasks
-                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user)
-            ]
-        else:
-            active_tasks = []
-    elif task_assignee_filter and task_assignee_filter != "הכל":
+    if view_filter and view_filter != "הצג הכל":
         active_tasks = [
             t for t in active_tasks
-            if _assignee_cell_matches_login(t.get("הוקצה ל"), task_assignee_filter)
+            if _task_row_matches_view_filter(t, view_filter)
         ]
+    elif not is_management and not current_user:
+        active_tasks = []
 
     if not active_tasks:
         st.info("אין לך משימות פתוחות כרגע! 🎉")
@@ -5220,6 +5221,7 @@ def _render_edit_existing_task_block() -> None:
 
     is_management_edit = st.session_state.get("is_management", False)
     current_user_edit = (st.session_state.get("current_user") or "").strip()
+    view_filter_edit = (st.session_state.get("view_filter") or "").strip()
     if not is_management_edit and current_user_edit:
         active_records = [
             r
@@ -5229,6 +5231,11 @@ def _render_edit_existing_task_block() -> None:
         st.caption(f"מוצגות רק משימות שבהן **אחראי** הוא **{current_user_edit}**.")
     elif not is_management_edit and not current_user_edit:
         active_records = []
+    elif is_management_edit and view_filter_edit and view_filter_edit != "הצג הכל":
+        active_records = [
+            r for r in active_records if _task_row_matches_view_filter(r, view_filter_edit)
+        ]
+        st.caption(f"תצוגת מנהל: משימות של **{view_filter_edit}** (סינון תצוגה בלבד).")
 
     if not active_records:
         st.info("אין משימות פעילות לעריכה.")
@@ -5429,7 +5436,20 @@ def show_tasks_page() -> None:
             time.sleep(1)
             st.rerun()
 
-        for assignee in TEAM_EMAILS.keys():
+        vf_mon = (st.session_state.get("view_filter") or "").strip()
+        is_mgmt_mon = st.session_state.get("is_management", False)
+        if is_mgmt_mon and vf_mon == "הצג הכל":
+            assignees_iter = list(TEAM_EMAILS.keys())
+        elif vf_mon and vf_mon != "הצג הכל":
+            assignees_iter = [vf_mon] if vf_mon in TEAM_EMAILS else []
+        else:
+            assignees_iter = (
+                [k for k in TEAM_EMAILS if _assignee_cell_matches_login(k, vf_mon)]
+                if vf_mon
+                else []
+            )
+
+        for assignee in assignees_iter:
             user_tasks = [
                 t
                 for t in open_tasks
@@ -5581,12 +5601,13 @@ def show_tasks_page() -> None:
             # עמודת סימון למחיקה מרובה
             DELETE_COL = "סמן למחיקה 🗑️"
             df.insert(0, DELETE_COL, False)
-            # זמנית: ביטול סינון לפי Assignee - הצגת כל המשימות
-            # if not is_admin():
-            #     current_user = _get_assignee_for_current_user()
-            #     assignee_col = df.get("Assignee")
-            #     if assignee_col is not None:
-            #         df = df[assignee_col.fillna("").apply(lambda a: _assignee_matches_task(str(a), current_user))]
+            vf_tbl = (st.session_state.get("view_filter") or "").strip()
+            if vf_tbl and vf_tbl != "הצג הכל":
+                df = df[
+                    df["הוקצה ל"].apply(
+                        lambda cell: _task_row_matches_view_filter({"הוקצה ל": cell}, vf_tbl)
+                    )
+                ]
             if df.empty:
                 st.info("אין משימות להצגה.")
             else:
@@ -5764,8 +5785,11 @@ def show_tasks_page() -> None:
 
         is_management_wl = st.session_state.get("is_management", False)
         current_user_wl = (st.session_state.get("current_user") or "").strip()
-        if is_management_wl:
+        vf_wl = (st.session_state.get("view_filter") or "").strip()
+        if is_management_wl and vf_wl == "הצג הכל":
             st.caption("תרשים הגאנט מציג את כל משימות הצוות (מנהלים: טל וערן).")
+        elif is_management_wl and vf_wl and vf_wl != "הצג הכל":
+            st.caption(f"תצוגת מנהל: הגאנט מציג משימות של **{vf_wl}** (סינון תצוגה בלבד).")
         elif current_user_wl:
             st.caption(f"תרשים הגאנט מציג רק את **המשימות שלך** (אחראי: {current_user_wl}).")
         else:
@@ -5790,11 +5814,8 @@ def show_tasks_page() -> None:
             t for t in tasks_wl_all
             if (t.get("סטטוס") or "").strip().lower() not in _wl_ex_lower
         ]
-        if not is_management_wl and current_user_wl:
-            active_wl = [
-                t for t in active_wl
-                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user_wl)
-            ]
+        if vf_wl and vf_wl != "הצג הכל":
+            active_wl = [t for t in active_wl if _task_row_matches_view_filter(t, vf_wl)]
         elif not is_management_wl and not current_user_wl:
             active_wl = []
 
@@ -6456,6 +6477,17 @@ def main() -> None:
     st.sidebar.markdown(f"**מחובר/ת כעת:** {current_user or '—'}")
     is_management = current_user in MANAGEMENT_USERS
     st.session_state["is_management"] = is_management
+
+    if is_management:
+        view_filter = st.sidebar.selectbox(
+            "👁️ סינון משימות (תצוגת מנהל):",
+            options=["הצג הכל"] + list(TEAM_EMAILS.keys()),
+            index=0,
+            key="sidebar_view_filter_task",
+        )
+    else:
+        view_filter = (st.session_state.get("current_user") or "").strip()
+    st.session_state["view_filter"] = view_filter
 
     if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
         st.cache_data.clear()  # ניקוי cache כדי לטעון נתונים עדכניים מגוגל שיטס
