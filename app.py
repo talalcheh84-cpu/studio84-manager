@@ -5091,7 +5091,6 @@ def show_project_folders_page() -> None:
     row = active_rows[pick]
     client = (row.get("Client") or "").strip()
     project = (row.get("Project") or "").strip()
-    is_management = st.session_state.get("is_management", False)
 
     client_email = (row.get("Client Email") or "").strip()
     contact_person = (row.get("Contact Person") or "").strip()
@@ -5118,9 +5117,6 @@ def show_project_folders_page() -> None:
         st.markdown(f"**שם/טלפון אדריכל:** {architect_phone or '—'}")
         ver = (row.get("Version") or "").strip()
         st.markdown(f"**גרסת הצעה:** {ver or '—'}")
-        total_p = (row.get("Total Price") or "").strip()
-        if total_p and is_management:
-            st.markdown(f"**מחיר בהצעה:** {total_p}")
 
     with st.expander("✏️ עדכון פרטי פרויקט והערות", expanded=False):
         with st.form("hub_edit_quote_form"):
