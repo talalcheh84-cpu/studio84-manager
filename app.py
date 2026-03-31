@@ -1164,7 +1164,7 @@ CONTACTS_COLUMNS = [
     "אימייל",
     "סוג איש קשר",
 ]
-CONTACT_TYPE_OPTIONS = ["אדריכל", "יזם/לקוח", "הנהלת חשבונות", "מפקח/אחר"]
+CONTACT_TYPE_OPTIONS = ["לקוח", "אדריכל", "יזם", "מפקח", "קבלן", "אחר"]
 
 
 DROPBOX_BASE_FOLDER = "/Studio84/StudioManager/Projects"
@@ -1539,8 +1539,8 @@ def _ensure_sheet(sheet_name: str, columns: list[str]):
 
 
 @st.cache_data(ttl=120)
-def load_contacts() -> pd.DataFrame:
-    """טוען אנשי קשר מגיליון contacts בגוגל שיטס."""
+def read_contacts_sheet() -> pd.DataFrame:
+    """משיכת נתוני אנשי קשר מגיליון contacts ל-DataFrame (כמו quotes / tasks)."""
     if spreadsheet is None:
         return pd.DataFrame(columns=CONTACTS_COLUMNS)
     _ensure_sheet('contacts', CONTACTS_COLUMNS)
@@ -4143,7 +4143,7 @@ def show_quotes_management_page() -> None:
                     # קריאת אנשי קשר מגיליון contacts בגוגל שיטס
                     contacts_list: list[str] = []
                     try:
-                        df_contacts = load_contacts()
+                        df_contacts = read_contacts_sheet()
                         if not df_contacts.empty:
                             for _, c in df_contacts.iterrows():
                                 name = (c.get("שם מלא") or "").strip()
@@ -4645,7 +4645,7 @@ def show_quotes_management_page() -> None:
                     # קריאת אנשי קשר מגיליון contacts בגוגל שיטס
                     contacts_list_fb: list[str] = []
                     try:
-                        df_contacts_fb = load_contacts()
+                        df_contacts_fb = read_contacts_sheet()
                         if not df_contacts_fb.empty:
                             for _, c in df_contacts_fb.iterrows():
                                 name = (c.get("שם מלא") or "").strip()
@@ -4963,15 +4963,21 @@ def _build_gantt_dataframe_for_timeline(
     end_col = "תאריך יעד" if "תאריך יעד" in gantt_df.columns else None
     if not end_col:
         return None, None, "חסרה עמודת תאריך יעד"
-    today_str = datetime.today().strftime("%Y-%m-%d")
-    if "תאריך התחלה" not in gantt_df.columns:
-        gantt_df["תאריך התחלה"] = today_str
+    # ציר X: תאריך התחלה (או תאריך יעד אם חסרה התחלה) → סיום בתאריך יעד
     gantt_df["_start_dt"] = gantt_df.apply(
-        lambda r: _parse_task_date(str(r.get("תאריך התחלה", "") or "")) or datetime.today(),
+        lambda r: (
+            _parse_task_date(str(r.get("תאריך התחלה", "") or ""))
+            or _parse_task_date(str(r.get("תאריך יעד", "") or ""))
+            or datetime.today()
+        ),
         axis=1,
     )
     gantt_df["_end_dt"] = gantt_df.apply(
-        lambda r: _parse_task_date(str(r.get("תאריך יעד", "") or "")) or datetime.today(),
+        lambda r: (
+            _parse_task_date(str(r.get("תאריך יעד", "") or ""))
+            or _parse_task_date(str(r.get("תאריך התחלה", "") or ""))
+            or datetime.today()
+        ),
         axis=1,
     )
     mask = gantt_df["_start_dt"] > gantt_df["_end_dt"]
@@ -5001,6 +5007,108 @@ def _build_gantt_dataframe_for_timeline(
             gantt_df["_y_gantt"] = gantt_df.get("שם משימה", pd.Series([""] * len(gantt_df))).fillna("")
 
     return gantt_df, "_y_gantt", None
+
+
+def _signed_quote_rows_for_project_hub() -> list[dict]:
+    """שורות quotes עם סטטוס Signed — שורה אחת לכל (Client, Project) לפי גרסה גבוהה ביותר."""
+    rows = read_quotes_csv()
+    best: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        if (r.get("Status") or "").strip().lower() != "signed":
+            continue
+        c = (r.get("Client") or "").strip()
+        p = (r.get("Project") or "").strip()
+        if not p:
+            continue
+        key = (c, p)
+        pv = parse_version_number(r.get("Version") or "")
+        prev = best.get(key)
+        if prev is None or pv > parse_version_number(prev.get("Version") or ""):
+            best[key] = r
+    return list(best.values())
+
+
+def _find_project_row_for_hub(client: str, project_name: str) -> dict | None:
+    """רשומת projects לפי לקוח ושם פרויקט (התאמה לשדות ב-quotes)."""
+    c_key = (client or "").strip()
+    p_key = (project_name or "").strip()
+    for pr in read_projects():
+        if (pr.get("Client") or "").strip() == c_key and (pr.get("Project Name") or "").strip() == p_key:
+            return pr
+    return None
+
+
+def show_project_folders_page() -> None:
+    """תיקי פרויקטים — מידע מרוכז מהצעה (Signed) וקישורי דרופבוקס ממסד הפרויקטים."""
+    st.title("📁 תיקי פרויקטים (מידע וקשר)")
+    st.caption("פרויקטים חתומים (Signed) בגיליון ההצעות — פרטי לקוח וקישורים לצוות.")
+
+    signed_rows = _signed_quote_rows_for_project_hub()
+    if not signed_rows:
+        st.info("אין פרויקטים בסטטוס 'Signed' בגיליון ההצעות. עדכנו סטטוס הצעה לחתום כדי שיופיעו כאן.")
+        return
+
+    def _hub_label(r: dict) -> str:
+        c = (r.get("Client") or "").strip()
+        p = (r.get("Project") or "").strip()
+        return f"{p} — {c}" if c else p
+
+    signed_rows.sort(key=lambda r: _hub_label(r).lower())
+    labels = [_hub_label(r) for r in signed_rows]
+    pick = st.selectbox(
+        "בחר פרויקט פעיל (חתום)",
+        options=list(range(len(signed_rows))),
+        format_func=lambda i: labels[i],
+        key="project_hub_pick",
+    )
+    row = signed_rows[pick]
+    client = (row.get("Client") or "").strip()
+    project = (row.get("Project") or "").strip()
+
+    client_email = (row.get("Client Email") or "").strip()
+    contact_person = (row.get("Contact Person") or "").strip()
+    architect_phone = (
+        (row.get("Architect Phone") or row.get("טלפון אדריכל") or row.get("ArchitectPhone") or "").strip()
+    )
+    client_phone = (
+        (row.get("Client Phone") or row.get("Phone") or row.get("טלפון לקוח") or row.get("טלפון") or "").strip()
+    )
+
+    with st.container(border=True):
+        st.subheader("תעודת זהות — פרויקט")
+        st.markdown(f"**שם פרויקט:** {project or '—'}")
+        st.markdown(f"**לקוח:** {client or '—'}")
+        st.markdown(f"**איש קשר (מההצעה):** {contact_person or '—'}")
+        st.markdown(f"**אימייל לקוח:** {client_email or '—'}")
+        st.markdown(f"**טלפון לקוח:** {client_phone or '—'}")
+        st.markdown(f"**טלפון אדריכל:** {architect_phone or '—'}")
+        ver = (row.get("Version") or "").strip()
+        st.markdown(f"**גרסת הצעה:** {ver or '—'}")
+        total_p = (row.get("Total Price") or "").strip()
+        if total_p:
+            st.markdown(f"**מחיר בהצעה:** {total_p}")
+
+    st.subheader("קישורי דרופבוקס")
+    proj_row = _find_project_row_for_hub(client, project)
+    if proj_row is None:
+        st.info(
+            "לא נמצאה רשומת פרויקט תואמת בגיליון projects (אותו לקוח ושם פרויקט). "
+            "לאחר יצירת הפרויקט והגדרת קישורים — הם יופיעו כאן."
+        )
+    else:
+        dm = (proj_row.get("Dropbox_Main") or "").strip()
+        du = (proj_row.get("Dropbox_Upload") or "").strip()
+        dd = (proj_row.get("Dropbox_Deliverables") or "").strip()
+        if not dm and not du and not dd:
+            st.caption("אין קישורי דרופבוקס שמורים לפרויקט זה במסד.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            if dm:
+                c1.link_button("דרופבוקס — ראשי", dm, use_container_width=True)
+            if du:
+                c2.link_button("דרופבוקס — בקשת קבצים / העלאה", du, use_container_width=True)
+            if dd:
+                c3.link_button("דרופבוקס — תוצרים", dd, use_container_width=True)
 
 
 def show_monitor_3d_page() -> None:
@@ -5267,6 +5375,8 @@ def _render_edit_existing_task_block() -> None:
         return team_keys[0]
 
     default_team = _assignee_key_for_row(sel)
+    start_parsed = _parse_task_date(str(sel.get("תאריך התחלה") or ""))
+    start_val = start_parsed.date() if start_parsed else date.today()
     due_parsed = _parse_task_date(str(sel.get("תאריך יעד") or ""))
     due_val = due_parsed.date() if due_parsed else date.today()
 
@@ -5294,6 +5404,11 @@ def _render_edit_existing_task_block() -> None:
             key=f"edit_gs_assignee_{tid}",
         )
         st.date_input(
+            "תאריך התחלה",
+            value=start_val,
+            key=f"edit_gs_start_{tid}",
+        )
+        st.date_input(
             "תאריך יעד",
             value=due_val,
             key=f"edit_gs_due_{tid}",
@@ -5310,9 +5425,10 @@ def _render_edit_existing_task_block() -> None:
     if submitted:
         new_desc = (st.session_state.get(f"edit_gs_desc_{tid}") or "").strip()
         new_assignee = st.session_state.get(f"edit_gs_assignee_{tid}")
+        new_start = st.session_state.get(f"edit_gs_start_{tid}")
         new_due = st.session_state.get(f"edit_gs_due_{tid}")
         new_status = st.session_state.get(f"edit_gs_status_{tid}")
-        if new_assignee is None or new_status is None or new_due is None:
+        if new_assignee is None or new_status is None or new_due is None or new_start is None:
             st.error("חסרים ערכים בטופס — נסה שוב.")
         else:
             full_rows = read_tasks()
@@ -5323,6 +5439,7 @@ def _render_edit_existing_task_block() -> None:
                 updated = dict(full_rows[row_idx])
                 updated["תיאור המשימה"] = new_desc
                 updated["הוקצה ל"] = new_assignee
+                updated["תאריך התחלה"] = new_start.strftime("%Y-%m-%d")
                 updated["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
                 updated["סטטוס"] = new_status
                 full_rows[row_idx] = updated
@@ -5360,6 +5477,7 @@ def show_tasks_page() -> None:
                     height=120,
                 )
                 assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
+                start_date = st.date_input("תאריך התחלה", value=date.today(), key="assign_task_start")
                 due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
                 submitted = st.form_submit_button("הקצה משימה 🚀")
 
@@ -5376,7 +5494,7 @@ def show_tasks_page() -> None:
                     "שם משימה": task_name,
                     "תיאור המשימה": task_desc,
                     "הוקצה ל": assignee,
-                    "תאריך התחלה": datetime.today().strftime("%Y-%m-%d"),
+                    "תאריך התחלה": start_date.strftime("%Y-%m-%d"),
                     "תאריך יעד": due_date.strftime("%Y-%m-%d"),
                     "סטטוס": "ממתין",
                 }
@@ -5943,42 +6061,65 @@ def show_contacts_page() -> None:
     )
     st.markdown("---")
 
-    # טופס הוספה מהירה
-    with st.expander("➕ הוספת איש קשר חדש", expanded=True):
-        col1, col2, col3 = st.columns(3)
+    with st.form("הוספת איש קשר חדש", clear_on_submit=False):
+        col1, col2 = st.columns(2)
         with col1:
-            form_name = st.text_input("שם מלא", key="contact_form_name")
+            form_name = st.text_input("שם מלא", key="contact_form_full_name")
             form_company = st.text_input("חברה / משרד אדריכלים", key="contact_form_company")
-        with col2:
             form_role = st.text_input("תפקיד", key="contact_form_role")
+        with col2:
             form_phone = st.text_input("טלפון", key="contact_form_phone")
-        with col3:
             form_email = st.text_input("אימייל", key="contact_form_email")
             form_type = st.selectbox(
                 "סוג איש קשר",
                 options=CONTACT_TYPE_OPTIONS,
                 key="contact_form_type",
             )
-        if st.button("הוסף איש קשר", type="primary", key="add_contact_btn"):
+        submitted = st.form_submit_button("שמור איש קשר", type="primary")
+        if submitted:
             if not (form_name or "").strip():
                 st.warning("נא להזין לפחות שם מלא.")
             else:
                 try:
-                    df = load_contacts()
+                    df = read_contacts_sheet()
                     new_row = {
                         "שם מלא": (form_name or "").strip(),
                         "חברה / משרד אדריכלים": (form_company or "").strip(),
                         "תפקיד": (form_role or "").strip(),
                         "טלפון": (form_phone or "").strip(),
                         "אימייל": (form_email or "").strip(),
-                        "סוג איש קשר": form_type or CONTACT_TYPE_OPTIONS[0],
+                        "סוג איש קשר": (form_type or "").strip() or CONTACT_TYPE_OPTIONS[0],
                     }
                     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_contacts(df)
-                    st.success("איש הקשר נוסף בהצלחה!")
-                    st.rerun()
                 except Exception as e:
                     st.error(f"שגיאה בהוספה: {e}")
+
+    st.subheader("ספר טלפונים")
+    df_display = read_contacts_sheet()
+    search_q = st.text_input(
+        "🔍 חיפוש לפי שם, חברה או תפקיד",
+        key="contacts_phonebook_search",
+        placeholder="הקלד לסינון…",
+    )
+    if df_display.empty:
+        st.info("אין עדיין אנשי קשר. הוסף איש קשר באמצעות הטופס למעלה.")
+    else:
+        q = (search_q or "").strip().lower()
+        if q:
+            mask = (
+                df_display["שם מלא"].astype(str).str.lower().str.contains(q, na=False)
+                | df_display["חברה / משרד אדריכלים"].astype(str).str.lower().str.contains(q, na=False)
+                | df_display["תפקיד"].astype(str).str.lower().str.contains(q, na=False)
+            )
+            df_filtered = df_display[mask].copy()
+        else:
+            df_filtered = df_display
+        if df_filtered.empty and q:
+            st.caption("לא נמצאו תוצאות לחיפוש. נסה מילה אחרת או נקה את החיפוש.")
+        st.dataframe(df_filtered, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
 
     # ייבוא מרוכז מקובץ CSV
     with st.expander("📥 ייבוא אנשי קשר מקובץ (Outlook / Excel)"):
@@ -6034,7 +6175,7 @@ def show_contacts_page() -> None:
                         st.caption("תצוגה מקדימה:")
                         st.dataframe(df_temp.head(), use_container_width=True)
                         if st.button("ייבא נתונים לספר הטלפונים", type="primary", key="contacts_import_btn"):
-                            df_existing = load_contacts()
+                            df_existing = read_contacts_sheet()
                             df_combined = pd.concat([df_existing, df_temp], ignore_index=True)
                             # הסרת כפילויות: שורות עם אימייל - לפי אימייל; שורות בלי אימייל - לפי שם מלא
                             has_email = (df_combined["אימייל"].astype(str).str.strip() != "")
@@ -6048,41 +6189,6 @@ def show_contacts_page() -> None:
                 st.warning("הקובץ ריק או פגום. אין נתונים לייבא.")
             except Exception as e:
                 st.error(f"שגיאה בקריאת הקובץ: {e}")
-
-    st.subheader("מאגר אנשי קשר")
-    df = load_contacts()
-    if df.empty:
-        st.info("אין עדיין אנשי קשר. הוסף איש קשר באמצעות הטופס למעלה.")
-        return
-
-    column_config = {
-        "שם מלא": st.column_config.TextColumn("שם מלא"),
-        "חברה / משרד אדריכלים": st.column_config.TextColumn("חברה / משרד אדריכלים"),
-        "תפקיד": st.column_config.TextColumn("תפקיד"),
-        "טלפון": st.column_config.TextColumn("טלפון"),
-        "אימייל": st.column_config.TextColumn("אימייל"),
-        "סוג איש קשר": st.column_config.SelectboxColumn(
-            "סוג איש קשר",
-            options=CONTACT_TYPE_OPTIONS,
-            required=True,
-        ),
-    }
-
-    edited_df = st.data_editor(
-        df,
-        hide_index=True,
-        use_container_width=True,
-        column_config=column_config,
-        key="contacts_data_editor",
-    )
-
-    if not edited_df.equals(df):
-        try:
-            save_contacts(edited_df)
-            st.success("השינויים נשמרו בהצלחה!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"שגיאה בשמירה: {e}")
 
 
 def _validate_credentials(username_input: str, password_input: str) -> tuple[bool, str | None, str | None]:
@@ -6494,10 +6600,21 @@ def main() -> None:
         st.rerun()
 
     if not is_management:
-        # צוות — רק מוניטור משימות (ללא הצעות/לקוחות/חדר מצב)
+        # צוות — מוניטור משימות + תיקי פרויקטים (ללא הצעות/לקוחות/חדר מצב)
         _render_quick_comm_sidebar_form()
         _render_quick_comm_notifications()
-        show_monitor_3d_page()
+        team_main_nav = st.sidebar.radio(
+            "ניווט ראשי:",
+            [
+                "🖥️ מוניטור צוות / משימות",
+                "📁 תיקי פרויקטים (מידע וקשר)",
+            ],
+            key="team_main_nav",
+        )
+        if team_main_nav == "📁 תיקי פרויקטים (מידע וקשר)":
+            show_project_folders_page()
+        else:
+            show_monitor_3d_page()
         st.sidebar.markdown("---")
         if st.sidebar.button("התנתק 🚪", key="logout_btn", use_container_width=True):
             for k in ("logged_in", "username", "role", "current_user", "is_management", "sidebar_current_user"):
@@ -6510,6 +6627,7 @@ def main() -> None:
         "ניווט ראשי:",
         [
             "📊 חדר מצב (מוניטור פרויקטים)",
+            "📁 תיקי פרויקטים (מידע וקשר)",
             "🖥️ מוניטור צוות / משימות",
             "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)",
         ],
@@ -6620,6 +6738,12 @@ def main() -> None:
             st.session_state.monitor_filter = None
             st.session_state.monitor_title = ""
             st.rerun()
+
+    elif main_nav == "📁 תיקי פרויקטים (מידע וקשר)":
+        _render_quick_comm_notifications()
+        _render_quick_comm_sidebar_form()
+        _render_dropbox_access_token_hint_sidebar()
+        show_project_folders_page()
 
     elif main_nav == "🖥️ מוניטור צוות / משימות":
         _render_quick_comm_notifications()
