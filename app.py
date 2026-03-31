@@ -785,7 +785,7 @@ def send_task_assignment_email_tali(
     cc_emails: list[str] | None = None,
 ) -> bool:
     """
-    מייל על הקצאת משימה — כולל תיאור מלא (חשוב במיוחד למשימות מסוג 'אחר').
+    מייל על הקצאת משימה — כולל סוג המשימה ופירוט/הערות אם הוזנו.
     """
     try:
         smtp_server = "smtp.gmail.com"
@@ -5317,68 +5317,59 @@ def show_tasks_page() -> None:
             with st.form("assign_task_form", clear_on_submit=True):
                 selected_project = st.selectbox("פרויקט", options=projects_options, key="assign_task_project")
                 task_type = st.selectbox("סוג משימה", options=TASK_TYPE_OPTIONS, key="assign_task_type")
-                if task_type == "אחר":
-                    st.text_input(
-                        "פרטי המשימה המיוחדת",
-                        key="assign_task_custom_detail",
-                        placeholder="תאר את המשימה — הטקסט יישמר בעמודת תיאור המשימה ויישלח במייל לצוות",
-                    )
+                st.text_area(
+                    "פירוט המשימה / הערות נוספות (אופציונלי)",
+                    key="assign_task_notes",
+                    placeholder="ניתן להרחיב — הטקסט יישמר בעמודת תיאור המשימה ויישלח במייל לצוות",
+                    height=120,
+                )
                 assignee = st.selectbox("הוקצה ל:", options=TASK_TEAM, key="assign_task_assignee")
                 due_date = st.date_input("תאריך יעד למשימה", value=date.today(), key="assign_task_due")
                 submitted = st.form_submit_button("הקצה משימה 🚀")
 
             if submitted:
-                task_name: str | None = None
-                task_desc = ""
-                if task_type == "אחר":
-                    detail = (st.session_state.get("assign_task_custom_detail") or "").strip()
-                    if not detail:
-                        st.error("נא למלא «פרטי המשימה המיוחדת» כשבוחרים «אחר».")
-                    else:
-                        task_name = detail
-                        task_desc = detail
-                else:
-                    task_name = task_type
-                    task_desc = ""
+                notes = (st.session_state.get("assign_task_notes") or "").strip()
+                task_name = task_type
+                # גיליון: סוג ב«שם משימה»; ב«תיאור» — שילוב סוג + פירוט כשיש טקסט חופשי
+                task_desc = f"{task_type}\n\n{notes}" if notes else ""
 
-                if task_name is not None:
-                    existing = read_tasks()
-                    row = {
-                        "מזהה משימה": str(uuid.uuid4()),
-                        "פרויקט": selected_project,
-                        "שם משימה": task_name,
-                        "תיאור המשימה": task_desc,
-                        "הוקצה ל": assignee,
-                        "תאריך התחלה": datetime.today().strftime("%Y-%m-%d"),
-                        "תאריך יעד": due_date.strftime("%Y-%m-%d"),
-                        "סטטוס": "ממתין",
-                    }
-                    existing.append(row)
-                    write_tasks(existing, skip_rerun=True)
-                    st.cache_data.clear()
-                    assignee_email = _team_email_for_task_assignee(assignee)
-                    if assignee_email:
-                        cc_list: list[str] = []
-                        for k in ("ערן", "טל"):
-                            em = TEAM_EMAILS.get(k)
-                            if em and str(em).strip() and str(em).strip() != assignee_email:
-                                cc_list.append(str(em).strip())
-                        send_task_assignment_email_tali(
-                            assignee_email,
-                            selected_project,
-                            task_name,
-                            task_desc,
-                            due_date.strftime("%d/%m/%Y"),
-                            assignee,
-                            cc_emails=cc_list,
-                        )
-                    else:
-                        st.warning(
-                            "המשימה נשמרה בגיליון, אך לא נמצאה כתובת מייל לנמען שנבחר — לא נשלח מייל לצוות."
-                        )
-                    st.success("המשימה הוקצתה בהצלחה! ✅")
-                    time.sleep(1)
-                    st.rerun()
+                existing = read_tasks()
+                row = {
+                    "מזהה משימה": str(uuid.uuid4()),
+                    "פרויקט": selected_project,
+                    "שם משימה": task_name,
+                    "תיאור המשימה": task_desc,
+                    "הוקצה ל": assignee,
+                    "תאריך התחלה": datetime.today().strftime("%Y-%m-%d"),
+                    "תאריך יעד": due_date.strftime("%Y-%m-%d"),
+                    "סטטוס": "ממתין",
+                }
+                existing.append(row)
+                write_tasks(existing, skip_rerun=True)
+                st.cache_data.clear()
+                assignee_email = _team_email_for_task_assignee(assignee)
+                if assignee_email:
+                    cc_list: list[str] = []
+                    for k in ("ערן", "טל"):
+                        em = TEAM_EMAILS.get(k)
+                        if em and str(em).strip() and str(em).strip() != assignee_email:
+                            cc_list.append(str(em).strip())
+                    send_task_assignment_email_tali(
+                        assignee_email,
+                        selected_project,
+                        task_name,
+                        task_desc,
+                        due_date.strftime("%d/%m/%Y"),
+                        assignee,
+                        cc_emails=cc_list,
+                    )
+                else:
+                    st.warning(
+                        "המשימה נשמרה בגיליון, אך לא נמצאה כתובת מייל לנמען שנבחר — לא נשלח מייל לצוות."
+                    )
+                st.success("המשימה הוקצתה בהצלחה! ✅")
+                time.sleep(1)
+                st.rerun()
 
     elif sub_nav == "מוניטור צוות (עדכון סטטוסים) 📋":
         # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
