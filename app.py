@@ -655,7 +655,7 @@ TEAM_EMAIL_BY_SHORT = {name.split('-')[0].strip(): email for name, email in TEAM
 # מספר וואצאפ של ערן (placeholder - ניתן למלא/לשנות)
 WHATSAPP_ERAN = "972547641984"
 
-# שמות צוות + מיילים (בורר 'מי מחובר למערכת' ושליחת מיילים)
+# שמות צוות + מיילים (שליחת מיילים; current_user נקבע בהתחברות בלבד)
 TEAM_EMAILS = {
     "טל": "talalcheh84@gmail.com",
     "ערן": "eran@studio84.co.il",
@@ -667,6 +667,35 @@ TEAM_EMAILS = {
     "הנהלת חשבונות": "accounts@studio84.co.il",
 }
 MANAGEMENT_USERS = frozenset({"טל", "ערן"})
+
+# מיפוי שם משתמש ממסך ההתחברות (אנגלית, lower) → שם קנוני ב-TEAM_EMAILS / משימות.
+# לאחר הסרת בורר הזהות בסיידבר, current_user נקבע רק בכניסה — יש להרחיב כאן לפי שמות ב-secrets.
+LOGIN_USERNAME_TO_CURRENT_USER: dict[str, str] = {
+    "tal": "טל",
+    "tali": "טל",
+    "eran": "ערן",
+    "maya": "מיה",
+    "lior": "ליאור",
+    "achiad": "אחיעד",
+    "or": "אור",
+    "george": "ג׳ורג׳",
+}
+
+
+def _session_current_user_from_login(username_normalized: str) -> str:
+    """שם המשתמש לריצה והרשאות — תואם למפתחות TEAM_EMAILS; לא מגיע מקלט UI אחר."""
+    u = (username_normalized or "").strip().lower()
+    if not u:
+        return ""
+    if u in LOGIN_USERNAME_TO_CURRENT_USER:
+        return LOGIN_USERNAME_TO_CURRENT_USER[u]
+    if u in TEAM_EMAILS:
+        return u
+    su = (username_normalized or "").strip()
+    if su in TEAM_EMAILS:
+        return su
+    return u
+
 
 # צבעים קבועים לגאנט (לפי מפתח TEAM_EMAILS)
 TEAM_GANTT_COLOR_HEX: dict[str, str] = {
@@ -6076,7 +6105,7 @@ def show_login_screen() -> None:
                 st.session_state["logged_in"] = True
                 st.session_state["username"] = username_normalized
                 st.session_state["role"] = role or "team"
-                st.session_state["current_user"] = username_normalized
+                st.session_state["current_user"] = _session_current_user_from_login(username_normalized)
                 st.rerun()
             else:
                 st.error("שם משתמש או סיסמה שגויים")
@@ -6085,8 +6114,8 @@ def show_login_screen() -> None:
 
 
 def _get_assignee_for_current_user() -> str:
-    """מחזיר את ה-Assignee המתאים למשתמש הנוכחי (לסינון משימות)."""
-    return (st.session_state.get("username") or st.session_state.get("current_user") or "צוות").strip()
+    """מחזיר את ה-Assignee המתאים למשתמש הנוכחי (לסינון משימות) — רק מ-session current_user (כניסה)."""
+    return (st.session_state.get("current_user") or "").strip() or "צוות"
 
 
 def is_admin() -> bool:
@@ -6423,12 +6452,8 @@ def main() -> None:
         st.session_state.monitor_title = "כל הפרויקטים (ללא סינון)"
 
     st.sidebar.title("תפריט ניהול")
-    current_user = st.sidebar.selectbox(
-        "מי מחובר למערכת?",
-        options=list(TEAM_EMAILS.keys()),
-        key="sidebar_current_user",
-    )
-    st.session_state["current_user"] = current_user
+    current_user = (st.session_state.get("current_user") or "").strip()
+    st.sidebar.markdown(f"**מחובר/ת כעת:** {current_user or '—'}")
     is_management = current_user in MANAGEMENT_USERS
     st.session_state["is_management"] = is_management
 
@@ -6443,7 +6468,7 @@ def main() -> None:
         show_monitor_3d_page()
         st.sidebar.markdown("---")
         if st.sidebar.button("התנתק 🚪", key="logout_btn", use_container_width=True):
-            for k in ("logged_in", "username", "role", "current_user", "is_management"):
+            for k in ("logged_in", "username", "role", "current_user", "is_management", "sidebar_current_user"):
                 st.session_state.pop(k, None)
             st.rerun()
         return
@@ -6600,7 +6625,7 @@ def main() -> None:
     # כפתור התנתקות בתחתית תפריט הצד (למנהל)
     st.sidebar.markdown("---")
     if st.sidebar.button("התנתק 🚪", key="logout_btn_manager", use_container_width=True):
-        for k in ("logged_in", "username", "role", "current_user", "is_management"):
+        for k in ("logged_in", "username", "role", "current_user", "is_management", "sidebar_current_user"):
             st.session_state.pop(k, None)
         st.rerun()
 
