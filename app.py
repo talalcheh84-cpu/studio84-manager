@@ -5010,12 +5010,26 @@ def _build_gantt_dataframe_for_timeline(
 
 
 def _signed_quote_rows_for_project_hub() -> list[dict]:
-    """שורות quotes עם סטטוס Signed — שורה אחת לכל (Client, Project) לפי גרסה גבוהה ביותר."""
+    """שורות quotes בסטטוסים פעילים (Signed / הומר לפרויקט) — שורה אחת לכל (Client, Project) לפי גרסה גבוהה ביותר."""
     rows = read_quotes_csv()
+    if not rows:
+        return []
+    quotes_df = pd.DataFrame(rows)
+    if quotes_df.empty or "Status" not in quotes_df.columns:
+        return []
+    active_projects = quotes_df[
+        quotes_df["Status"].fillna("").astype(str).str.strip().isin(["Signed", "הומר לפרויקט"])
+    ]
     best: dict[tuple[str, str], dict] = {}
-    for r in rows:
-        if (r.get("Status") or "").strip().lower() != "signed":
-            continue
+    for _, row in active_projects.iterrows():
+        r = {}
+        for c in QUOTES_CSV_COLUMNS:
+            v = row.get(c)
+            if v is None or (isinstance(v, str) and v.strip().lower() in ("nan", "none")):
+                r[c] = ""
+            else:
+                s = str(v).strip()
+                r[c] = "" if s.lower() in ("nan", "none") else s
         c = (r.get("Client") or "").strip()
         p = (r.get("Project") or "").strip()
         if not p:
@@ -5039,13 +5053,16 @@ def _find_project_row_for_hub(client: str, project_name: str) -> dict | None:
 
 
 def show_project_folders_page() -> None:
-    """תיקי פרויקטים — מידע מרוכז מהצעה (Signed) וקישורי דרופבוקס ממסד הפרויקטים."""
+    """תיקי פרויקטים — מידע מרוכז מהצעה (Signed / הומר לפרויקט) וקישורי דרופבוקס ממסד הפרויקטים."""
     st.title("📁 תיקי פרויקטים (מידע וקשר)")
-    st.caption("פרויקטים חתומים (Signed) בגיליון ההצעות — פרטי לקוח וקישורים לצוות.")
+    st.caption("פרויקטים פעילים בגיליון ההצעות (חתום או הומר לפרויקט) — פרטי לקוח וקישורים לצוות.")
 
-    signed_rows = _signed_quote_rows_for_project_hub()
-    if not signed_rows:
-        st.info("אין פרויקטים בסטטוס 'Signed' בגיליון ההצעות. עדכנו סטטוס הצעה לחתום כדי שיופיעו כאן.")
+    active_rows = _signed_quote_rows_for_project_hub()
+    if not active_rows:
+        st.info(
+            "אין פרויקטים בסטטוס 'Signed' או 'הומר לפרויקט' בגיליון ההצעות. "
+            "עדכנו סטטוס הצעה בהתאם כדי שיופיעו כאן."
+        )
         return
 
     def _hub_label(r: dict) -> str:
@@ -5053,15 +5070,15 @@ def show_project_folders_page() -> None:
         p = (r.get("Project") or "").strip()
         return f"{p} — {c}" if c else p
 
-    signed_rows.sort(key=lambda r: _hub_label(r).lower())
-    labels = [_hub_label(r) for r in signed_rows]
+    active_rows.sort(key=lambda r: _hub_label(r).lower())
+    labels = [_hub_label(r) for r in active_rows]
     pick = st.selectbox(
-        "בחר פרויקט פעיל (חתום)",
-        options=list(range(len(signed_rows))),
+        "בחר פרויקט פעיל",
+        options=list(range(len(active_rows))),
         format_func=lambda i: labels[i],
         key="project_hub_pick",
     )
-    row = signed_rows[pick]
+    row = active_rows[pick]
     client = (row.get("Client") or "").strip()
     project = (row.get("Project") or "").strip()
 
