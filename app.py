@@ -6095,6 +6095,92 @@ def show_contacts_page() -> None:
                 except Exception as e:
                     st.error(f"שגיאה בהוספה: {e}")
 
+    df_for_edit = read_contacts_sheet()
+    if not df_for_edit.empty:
+
+        def _crm_contact_row_label(i: int) -> str:
+            name = str(df_for_edit.iloc[i].get("שם מלא", "") or "").strip()
+            company = str(df_for_edit.iloc[i].get("חברה / משרד אדריכלים", "") or "").strip()
+            if name and company:
+                return f"{name} - {company}"
+            if name:
+                return name
+            if company:
+                return company
+            return f"(שורה {i + 1})"
+
+        st.markdown("### ✏️ עריכת איש קשר קיים")
+        _row_options = list(range(len(df_for_edit)))
+        selected_edit_idx = st.selectbox(
+            "בחר איש קשר לעריכה",
+            options=_row_options,
+            format_func=_crm_contact_row_label,
+            key="crm_edit_contact_select",
+        )
+        _edit_row = df_for_edit.iloc[selected_edit_idx]
+        _current_type = str(_edit_row.get("סוג איש קשר", "") or "").strip()
+        _type_opts = list(CONTACT_TYPE_OPTIONS)
+        if _current_type and _current_type not in _type_opts:
+            _type_opts = [_current_type] + _type_opts
+        _type_default_idx = _type_opts.index(_current_type) if _current_type in _type_opts else 0
+
+        with st.form("crm_edit_contact_form"):
+            _ec1, _ec2 = st.columns(2)
+            with _ec1:
+                edit_name = st.text_input(
+                    "שם מלא",
+                    value=str(_edit_row.get("שם מלא", "") or ""),
+                    key=f"crm_edit_full_name_{selected_edit_idx}",
+                )
+                edit_company = st.text_input(
+                    "חברה / משרד אדריכלים",
+                    value=str(_edit_row.get("חברה / משרד אדריכלים", "") or ""),
+                    key=f"crm_edit_company_{selected_edit_idx}",
+                )
+                edit_role = st.text_input(
+                    "תפקיד",
+                    value=str(_edit_row.get("תפקיד", "") or ""),
+                    key=f"crm_edit_role_{selected_edit_idx}",
+                )
+            with _ec2:
+                edit_phone = st.text_input(
+                    "טלפון",
+                    value=str(_edit_row.get("טלפון", "") or ""),
+                    key=f"crm_edit_phone_{selected_edit_idx}",
+                )
+                edit_email = st.text_input(
+                    "אימייל",
+                    value=str(_edit_row.get("אימייל", "") or ""),
+                    key=f"crm_edit_email_{selected_edit_idx}",
+                )
+                edit_type = st.selectbox(
+                    "סוג איש קשר",
+                    options=_type_opts,
+                    index=_type_default_idx,
+                    key=f"crm_edit_type_{selected_edit_idx}",
+                )
+            update_submitted = st.form_submit_button("עדכן פרטי איש קשר")
+
+        if update_submitted:
+            if not (edit_name or "").strip():
+                st.warning("נא להזין לפחות שם מלא.")
+            else:
+                try:
+                    df_upd = read_contacts_sheet()
+                    if df_upd.empty or selected_edit_idx >= len(df_upd):
+                        st.error("איש הקשר לא נמצא. רענן את הדף ונסה שוב.")
+                    else:
+                        _c = df_upd.columns.get_loc
+                        df_upd.iloc[selected_edit_idx, _c("שם מלא")] = (edit_name or "").strip()
+                        df_upd.iloc[selected_edit_idx, _c("חברה / משרד אדריכלים")] = (edit_company or "").strip()
+                        df_upd.iloc[selected_edit_idx, _c("תפקיד")] = (edit_role or "").strip()
+                        df_upd.iloc[selected_edit_idx, _c("טלפון")] = (edit_phone or "").strip()
+                        df_upd.iloc[selected_edit_idx, _c("אימייל")] = (edit_email or "").strip()
+                        df_upd.iloc[selected_edit_idx, _c("סוג איש קשר")] = (edit_type or "").strip() or CONTACT_TYPE_OPTIONS[0]
+                        save_contacts(df_upd)
+                except Exception as e:
+                    st.error(f"שגיאה בעדכון: {e}")
+
     st.subheader("ספר טלפונים")
     df_display = read_contacts_sheet()
     search_q = st.text_input(
