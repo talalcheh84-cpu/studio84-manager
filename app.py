@@ -5166,8 +5166,141 @@ def show_monitor_3d_page() -> None:
             st.rerun()
 
 
+def _render_edit_existing_task_block() -> None:
+    """אזור עריכת משימה קיימת — משימות פעילות, שמירה לגיליון tasks בגוגל שיטס."""
+    st.subheader("✏️ עריכת משימה קיימת")
+    tasks_rows = read_tasks()
+    if not tasks_rows:
+        st.info("אין משימות במערכת.")
+        return
+
+    tasks_df = pd.DataFrame(tasks_rows, columns=TASKS_LOG_COLUMNS).reindex(
+        columns=TASKS_LOG_COLUMNS, fill_value=""
+    ).fillna("")
+    if hasattr(tasks_df.columns, "str"):
+        tasks_df.columns = tasks_df.columns.str.strip()
+
+    excluded_status = ("הסתיים", "בוטל")
+    ex_lower = {s.strip().lower() for s in excluded_status}
+
+    def _is_active_status(s: str) -> bool:
+        return (s or "").strip().lower() not in ex_lower
+
+    mask = tasks_df["סטטוס"].astype(str).apply(_is_active_status)
+    active_records = tasks_df.loc[mask].to_dict(orient="records")
+
+    is_management_edit = st.session_state.get("is_management", False)
+    current_user_edit = (st.session_state.get("current_user") or "").strip()
+    if not is_management_edit and current_user_edit:
+        active_records = [
+            r
+            for r in active_records
+            if _assignee_cell_matches_login(r.get("הוקצה ל"), current_user_edit)
+        ]
+        st.caption(f"מוצגות רק משימות שבהן **אחראי** הוא **{current_user_edit}**.")
+    elif not is_management_edit and not current_user_edit:
+        active_records = []
+
+    if not active_records:
+        st.info("אין משימות פעילות לעריכה.")
+        return
+    if spreadsheet is None:
+        st.warning("אין חיבור לגוגל שיטס — לא ניתן לערוך משימות עד שהחיבור יוחזר.")
+        return
+
+    labels = [
+        f"{(r.get('שם משימה') or '').strip()} | {(r.get('פרויקט') or '').strip()} | {(r.get('הוקצה ל') or '').strip()}"
+        for r in active_records
+    ]
+    pick = st.selectbox(
+        "בחר משימה פעילה",
+        options=list(range(len(active_records))),
+        format_func=lambda i: labels[i],
+        key="edit_existing_task_pick_main",
+    )
+    sel = active_records[pick]
+    tid = (sel.get("מזהה משימה") or "").strip() or f"idx_{pick}"
+
+    team_keys = list(TEAM_EMAILS.keys())
+
+    def _assignee_key_for_row(t: dict) -> str:
+        cell = str(t.get("הוקצה ל") or "")
+        for k in TEAM_EMAILS:
+            if _assignee_matches_team_key(cell, k):
+                return k
+        return team_keys[0]
+
+    default_team = _assignee_key_for_row(sel)
+    due_parsed = _parse_task_date(str(sel.get("תאריך יעד") or ""))
+    due_val = due_parsed.date() if due_parsed else date.today()
+
+    cur_status = (sel.get("סטטוס") or "").strip()
+    existing_statuses = sorted(
+        {
+            str(r.get("סטטוס") or "").strip()
+            for r in tasks_rows
+            if str(r.get("סטטוס") or "").strip()
+        }
+    )
+    status_opts = list(dict.fromkeys(list(TASK_EDIT_STATUS_OPTIONS) + existing_statuses))
+
+    with st.form("edit_task_google_sheet_form"):
+        st.text_input(
+            "תיאור משימה",
+            value=(sel.get("תיאור המשימה") or ""),
+            key=f"edit_gs_desc_{tid}",
+        )
+        assignee_index = team_keys.index(default_team) if default_team in team_keys else 0
+        st.selectbox(
+            "איש צוות",
+            options=team_keys,
+            index=assignee_index,
+            key=f"edit_gs_assignee_{tid}",
+        )
+        st.date_input(
+            "תאריך יעד",
+            value=due_val,
+            key=f"edit_gs_due_{tid}",
+        )
+        status_index = status_opts.index(cur_status) if cur_status in status_opts else 0
+        st.selectbox(
+            "סטטוס",
+            options=status_opts,
+            index=status_index,
+            key=f"edit_gs_status_{tid}",
+        )
+        submitted = st.form_submit_button("עדכן משימה בגוגל שיטס")
+
+    if submitted:
+        new_desc = (st.session_state.get(f"edit_gs_desc_{tid}") or "").strip()
+        new_assignee = st.session_state.get(f"edit_gs_assignee_{tid}")
+        new_due = st.session_state.get(f"edit_gs_due_{tid}")
+        new_status = st.session_state.get(f"edit_gs_status_{tid}")
+        if new_assignee is None or new_status is None or new_due is None:
+            st.error("חסרים ערכים בטופס — נסה שוב.")
+        else:
+            full_rows = read_tasks()
+            row_idx = _find_task_row_index_in_full_list(full_rows, sel)
+            if row_idx is None:
+                st.error("לא נמצאה המשימה בגיליון (אולי נמחקה או עודכנה). רענן ונסה שוב.")
+            else:
+                updated = dict(full_rows[row_idx])
+                updated["תיאור המשימה"] = new_desc
+                updated["הוקצה ל"] = new_assignee
+                updated["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
+                updated["סטטוס"] = new_status
+                full_rows[row_idx] = updated
+                write_tasks(full_rows, skip_rerun=True)
+                st.cache_data.clear()
+                st.success("המשימה עודכנה בגוגל שיטס!")
+                time.sleep(1)
+                st.rerun()
+
+
 def show_tasks_page() -> None:
     st.title("ניהול פרויקטים ומשימות")
+    _render_edit_existing_task_block()
+    st.divider()
 
     sub_nav = st.radio(
         "בחר תצוגה:",
@@ -5507,96 +5640,6 @@ def show_tasks_page() -> None:
                         st.success("המשימות נמחקו בהצלחה!")
                         time.sleep(1)
                         st.rerun()
-
-        st.divider()
-        st.markdown("### ✏️ עריכת ועדכון משימה")
-        tasks_for_edit = read_tasks()
-        is_management_tasks = st.session_state.get("is_management", False)
-        current_user_tasks = (st.session_state.get("current_user") or "").strip()
-        if not is_management_tasks and current_user_tasks:
-            tasks_for_edit = [
-                t for t in tasks_for_edit
-                if _assignee_cell_matches_login(t.get("הוקצה ל"), current_user_tasks)
-            ]
-            st.caption(f"מוצגות רק משימות שבהן **אחראי** הוא **{current_user_tasks}**.")
-        elif not is_management_tasks and not current_user_tasks:
-            tasks_for_edit = []
-
-        def _task_display_label(r: dict) -> str:
-            p = (r.get("פרויקט") or "").strip()
-            n = (r.get("שם משימה") or "").strip()
-            a = (r.get("הוקצה ל") or "").strip()
-            if p and n:
-                base = f"{p} — {n}"
-            else:
-                base = p or n or "(ללא תיאור)"
-            return f"{base} ({a})" if a else base
-
-        if not tasks_for_edit:
-            st.info("אין משימות לעריכה. הוסף משימה בטאב 'הקצאת משימה חדשה'.")
-        elif spreadsheet is None:
-            st.warning("אין חיבור לגוגל שיטס — לא ניתן לערוך משימות עד שהחיבור יוחזר.")
-        else:
-            edit_idx = st.selectbox(
-                "בחר משימה לעדכון",
-                options=list(range(len(tasks_for_edit))),
-                format_func=lambda i: _task_display_label(tasks_for_edit[i]),
-                key="edit_existing_task_select",
-            )
-            sel_row = tasks_for_edit[edit_idx]
-            cur_due = _parse_date_safe(sel_row.get("תאריך יעד"), "תאריך יעד") or date.today()
-            cur_assignee = (sel_row.get("הוקצה ל") or "").strip()
-            assignee_opts = list(TASK_TEAM)
-            if cur_assignee and cur_assignee not in assignee_opts:
-                assignee_opts = [cur_assignee] + assignee_opts
-            cur_status = (sel_row.get("סטטוס") or "").strip()
-            status_opts = list(TASK_EDIT_STATUS_OPTIONS)
-            if cur_status and cur_status not in status_opts:
-                status_opts = [cur_status] + status_opts
-            assignee_index = assignee_opts.index(cur_assignee) if cur_assignee in assignee_opts else 0
-            status_index = status_opts.index(cur_status) if cur_status in status_opts else 0
-
-            new_due = st.date_input(
-                "תאריך יעד",
-                value=cur_due,
-                key=f"edit_task_due_val_{edit_idx}",
-            )
-            new_assignee = st.selectbox(
-                "איש צוות אחראי",
-                options=assignee_opts,
-                index=assignee_index,
-                key=f"edit_task_assignee_val_{edit_idx}",
-            )
-            new_status = st.selectbox(
-                "סטטוס משימה",
-                options=status_opts,
-                index=status_index,
-                key=f"edit_task_status_val_{edit_idx}",
-            )
-            new_desc = st.text_area(
-                "תיאור המשימה",
-                value=(sel_row.get("תיאור המשימה") or ""),
-                key=f"edit_task_desc_val_{edit_idx}",
-                height=120,
-            )
-
-            if st.button("שמור עדכון משימה", type="primary", key="save_edit_task_btn"):
-                full_rows = read_tasks()
-                row_idx = _find_task_row_index_in_full_list(full_rows, sel_row)
-                if row_idx is None:
-                    st.error("לא נמצאה המשימה בגיליון (אולי נמחקה או עודכנה). רענן ונסה שוב.")
-                else:
-                    updated = dict(full_rows[row_idx])
-                    updated["תאריך יעד"] = new_due.strftime("%Y-%m-%d")
-                    updated["הוקצה ל"] = new_assignee
-                    updated["סטטוס"] = new_status
-                    updated["תיאור המשימה"] = (new_desc or "").strip()
-                    full_rows[row_idx] = updated
-                    write_tasks(full_rows, skip_rerun=True)
-                    st.cache_data.clear()
-                    st.success("המשימה עודכנה בהצלחה!")
-                    time.sleep(1)
-                    st.rerun()
 
         # --- אנשי קשר לפרויקט ---
         st.divider()
