@@ -940,6 +940,7 @@ QUOTES_CSV_COLUMNS = [
     "model_update_val", "view_update_val", "extra_view_val",
     "custom_item_desc", "custom_item_price",
     "Status", "File Path", "Signed File Path", "Total Price",
+    "Client Phone", "Architect Contact", "Project Special Notes",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
@@ -2211,8 +2212,8 @@ def read_quotes_csv() -> list[dict]:
         return []
 
 
-def write_quotes_csv(rows: list[dict]) -> None:
-    """Write full quote form data to Google Sheets (quotes tab)."""
+def write_quotes_csv(rows: list[dict], *, skip_rerun: bool = False) -> None:
+    """Write full quote form data to Google Sheets (quotes tab). If skip_rerun, only updates sheet + clears cache."""
     sheet = _get_spreadsheet()
     if sheet is None:
         st.error("אין חיבור לגוגל שיטס. לא ניתן לשמור.")
@@ -2225,6 +2226,8 @@ def write_quotes_csv(rows: list[dict]) -> None:
         if data:
             worksheet.update(data, 'A1')
         st.cache_data.clear()
+        if skip_rerun:
+            return
         st.success("הצעת המחיר נשמרה בהצלחה בגוגל שיטס!")
         time.sleep(1.5)
         st.rerun()
@@ -2281,14 +2284,21 @@ def append_quote_to_csv(row: dict) -> None:
     write_quotes_csv(rows)
 
 
-def update_quote_in_csv(client: str, project: str, version: str, updated_row: dict) -> bool:
+def update_quote_in_csv(
+    client: str,
+    project: str,
+    version: str,
+    updated_row: dict,
+    *,
+    skip_rerun: bool = False,
+) -> bool:
     """Update existing quote in quotes (Google Sheets). Returns True if found and updated."""
     rows = read_quotes_csv()
     key = _quote_key(client, project, version)
     for i, r in enumerate(rows):
         if _quote_key(r.get("Client", ""), r.get("Project", ""), r.get("Version", "")) == key:
             rows[i] = {c: (updated_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
-            write_quotes_csv(rows)
+            write_quotes_csv(rows, skip_rerun=skip_rerun)
             return True
     return False
 
@@ -5081,11 +5091,18 @@ def show_project_folders_page() -> None:
     row = active_rows[pick]
     client = (row.get("Client") or "").strip()
     project = (row.get("Project") or "").strip()
+    is_management = st.session_state.get("is_management", False)
 
     client_email = (row.get("Client Email") or "").strip()
     contact_person = (row.get("Contact Person") or "").strip()
     architect_phone = (
-        (row.get("Architect Phone") or row.get("טלפון אדריכל") or row.get("ArchitectPhone") or "").strip()
+        (
+            row.get("Architect Contact")
+            or row.get("Architect Phone")
+            or row.get("טלפון אדריכל")
+            or row.get("ArchitectPhone")
+            or ""
+        ).strip()
     )
     client_phone = (
         (row.get("Client Phone") or row.get("Phone") or row.get("טלפון לקוח") or row.get("טלפון") or "").strip()
@@ -5098,12 +5115,55 @@ def show_project_folders_page() -> None:
         st.markdown(f"**איש קשר (מההצעה):** {contact_person or '—'}")
         st.markdown(f"**אימייל לקוח:** {client_email or '—'}")
         st.markdown(f"**טלפון לקוח:** {client_phone or '—'}")
-        st.markdown(f"**טלפון אדריכל:** {architect_phone or '—'}")
+        st.markdown(f"**שם/טלפון אדריכל:** {architect_phone or '—'}")
         ver = (row.get("Version") or "").strip()
         st.markdown(f"**גרסת הצעה:** {ver or '—'}")
         total_p = (row.get("Total Price") or "").strip()
-        if total_p:
+        if total_p and is_management:
             st.markdown(f"**מחיר בהצעה:** {total_p}")
+
+    with st.expander("✏️ עדכון פרטי פרויקט והערות", expanded=False):
+        with st.form("hub_edit_quote_form"):
+            f_client_email = st.text_input(
+                "אימייל לקוח",
+                value=str(row.get("Client Email", "") or ""),
+                key=f"hub_f_client_email_{pick}",
+            )
+            f_client_phone = st.text_input(
+                "טלפון לקוח",
+                value=str(row.get("Client Phone", "") or ""),
+                key=f"hub_f_client_phone_{pick}",
+            )
+            f_architect = st.text_input(
+                "שם/טלפון אדריכל",
+                value=str(row.get("Architect Contact", "") or ""),
+                key=f"hub_f_architect_{pick}",
+            )
+            f_notes = st.text_area(
+                "הערות פרויקט מיוחדות",
+                value=str(row.get("Project Special Notes", "") or ""),
+                height=120,
+                key=f"hub_f_notes_{pick}",
+            )
+            submitted = st.form_submit_button("שמור 💾", type="primary", use_container_width=True)
+
+        if submitted:
+            ver_save = (row.get("Version") or "").strip() or "V1"
+            base = get_quote_from_csv(client, project, ver_save)
+            if base is None:
+                base = {c: (row.get(c, "") or "") for c in QUOTES_CSV_COLUMNS}
+            else:
+                base = {c: (base.get(c, "") or "") for c in QUOTES_CSV_COLUMNS}
+            base["Client Email"] = (f_client_email or "").strip()
+            base["Client Phone"] = (f_client_phone or "").strip()
+            base["Architect Contact"] = (f_architect or "").strip()
+            base["Project Special Notes"] = (f_notes or "").strip()
+            if update_quote_in_csv(client, project, ver_save, base, skip_rerun=True):
+                st.success("הפרטים נשמרו בהצלחה.")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("לא נמצאה שורת הצעה לעדכון (Client / Project / Version).")
 
     st.subheader("קישורי דרופבוקס")
     proj_row = _find_project_row_for_hub(client, project)
