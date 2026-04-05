@@ -8,5 +8,5 @@ dropbox
 docxtpl
 plotly
 fpdf2
+arabic-reshaper
 python-bidi
-fpdf2
