@@ -984,6 +984,7 @@ QUOTES_LOG_COLUMNS = [
     "Custom Item Desc",
     "Custom Item Price",
     "מקדמה שולמה",
+    "סכום מקדמה",
     "גמר חשבון שולם",
 ]
 
@@ -1005,6 +1006,7 @@ QUOTES_CSV_COLUMNS = [
     "Client Phone", "Architect Contact", "Project Special Notes",
     "שלב עבודה",
     "מקדמה שולמה",
+    "סכום מקדמה",
     "גמר חשבון שולם",
 ]
 
@@ -1714,6 +1716,25 @@ def _normalize_payment_cell(val) -> str:
     return "כן" if _payment_marked_yes(val) else "לא"
 
 
+def _parse_currency_amount(val) -> float:
+    """מחרוזת מספרית (₪, פסיקים) -> float; ריק או לא תקין -> 0."""
+    if val is None:
+        return 0.0
+    s = str(val).strip().replace(",", "").replace(" ", "").replace("₪", "")
+    if not s:
+        return 0.0
+    try:
+        return max(0.0, float(s))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_advance_amount_storage(val) -> str:
+    """שמירת סכום מקדמה לגיליון — מחרוזת עם ספרות עשרוניות או ריק."""
+    a = _parse_currency_amount(val)
+    return f"{a:.2f}" if a > 0 else ""
+
+
 def _extract_total_from_quote_row(row: dict) -> float:
     """Extract total amount from a quote row. Tries: Total Price, סה"כ, Total, מחיר סופי, היקף כספי."""
     AMOUNT_COLS = ["Total Price", 'סה"כ', "Total", "מחיר סופי", "היקף כספי"]
@@ -2229,6 +2250,7 @@ def _quote_csv_to_log_row(r: dict) -> dict:
         "Custom Item Desc": (r.get("custom_item_desc") or r.get("Custom Item Desc") or "").strip(),
         "Custom Item Price": (r.get("custom_item_price") or r.get("Custom Item Price") or "").strip(),
         "מקדמה שולמה": _normalize_payment_cell(r.get("מקדמה שולמה")),
+        "סכום מקדמה": _format_advance_amount_storage(r.get("סכום מקדמה")),
         "גמר חשבון שולם": _normalize_payment_cell(r.get("גמר חשבון שולם")),
     }
 
@@ -2257,6 +2279,9 @@ def write_quotes_log(rows: list[dict]) -> None:
             q["custom_item_desc"] = (log_row.get("Custom Item Desc") or "").strip()
             q["custom_item_price"] = (log_row.get("Custom Item Price") or "").strip()
             q["מקדמה שולמה"] = _normalize_payment_cell(log_row.get("מקדמה שולמה", q.get("מקדמה שולמה")))
+            q["סכום מקדמה"] = _format_advance_amount_storage(
+                log_row.get("סכום מקדמה", q.get("סכום מקדמה"))
+            )
             q["גמר חשבון שולם"] = _normalize_payment_cell(log_row.get("גמר חשבון שולם", q.get("גמר חשבון שולם")))
     # Remove quotes that were deleted (in rows we have the current set - if a quote is in current but not in rows, it was deleted)
     keys_in_rows = {(r.get("Date"), r.get("Client"), r.get("Project"), r.get("Version")) for r in rows}
@@ -2323,6 +2348,7 @@ def read_quotes_csv() -> list[dict]:
                     normalized[c] = "" if s.lower() in ("nan", "none") else s
             for pay_col in ("מקדמה שולמה", "גמר חשבון שולם"):
                 normalized[pay_col] = _normalize_payment_cell(normalized.get(pay_col))
+            normalized["סכום מקדמה"] = _format_advance_amount_storage(normalized.get("סכום מקדמה"))
             result.append(normalized)
         return result
     except Exception as e:
@@ -2763,6 +2789,7 @@ def _show_import_past_quote_form() -> None:
                     "File Path": "",
                     "Signed File Path": str(target_path.resolve()),
                     "מקדמה שולמה": "לא",
+                    "סכום מקדמה": "",
                     "גמר חשבון שולם": "לא",
                 })
                 append_quote_to_csv(new_row)
@@ -3556,6 +3583,7 @@ def show_quote_page() -> None:
                     merged_csv = {c: (prev_full.get(c) or "") for c in QUOTES_CSV_COLUMNS}
             merged_csv.update(quote_csv_row)
             merged_csv["מקדמה שולמה"] = _normalize_payment_cell(merged_csv.get("מקדמה שולמה"))
+            merged_csv["סכום מקדמה"] = _format_advance_amount_storage(merged_csv.get("סכום מקדמה"))
             merged_csv["גמר חשבון שולם"] = _normalize_payment_cell(merged_csv.get("גמר חשבון שולם"))
             quote_csv_row = merged_csv
             if is_edit_mode and orig_client is not None and orig_project is not None and orig_version:
@@ -3920,19 +3948,24 @@ def _show_finance_collection_dashboard() -> None:
             proj_status[ck] = (pr.get("Status") or "").strip()
 
     totals: list[float] = []
-    collected: list[float] = []
+    collected_full_final: list[float] = []
+    total_received_parts: list[float] = []
     for _, row in deduped.iterrows():
         rdict = row.to_dict()
         price = _extract_total_from_quote_row(rdict)
+        adv = min(_parse_currency_amount(rdict.get("סכום מקדמה")), price)
         totals.append(price)
         if _payment_marked_yes(rdict.get("גמר חשבון שולם")):
-            collected.append(price)
+            collected_full_final.append(price)
+            total_received_parts.append(price)
         else:
-            collected.append(0.0)
+            collected_full_final.append(0.0)
+            total_received_parts.append(adv)
 
     total_volume = sum(totals)
-    total_collected_full = sum(collected)
-    open_balance = total_volume - total_collected_full
+    total_collected_full = sum(collected_full_final)
+    total_received = sum(total_received_parts)
+    open_balance = total_volume - total_received
 
     c1, c2, c3 = st.columns(3)
     c1.metric("סך היקף עסקאות (פעילים, לפי גרסה אחרונה)", f"₪{total_volume:,.0f}")
@@ -3949,6 +3982,7 @@ def _show_finance_collection_dashboard() -> None:
         st_proj = proj_status.get((client, project), "")
         if not st_proj:
             st_proj = str(row.get("Status") or "").strip()
+        adv_amt = min(_parse_currency_amount(row.get("סכום מקדמה")), price)
         table_rows.append(
             {
                 "שם פרויקט": project,
@@ -3957,11 +3991,20 @@ def _show_finance_collection_dashboard() -> None:
                 "שלב בקנבן": _normalized_kanban_stage(str(row.get("שלב עבודה") or "")),
                 "מחיר בהצעה": price,
                 "מקדמה שולמה": _normalize_payment_cell(row.get("מקדמה שולמה")),
+                "סכום מקדמה": adv_amt,
                 "גמר חשבון שולם": _normalize_payment_cell(row.get("גמר חשבון שולם")),
             }
         )
     display_df = pd.DataFrame(table_rows)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "מחיר בהצעה": st.column_config.NumberColumn("מחיר בהצעה (₪)", format="%.0f"),
+            "סכום מקדמה": st.column_config.NumberColumn("סכום מקדמה (₪)", format="%.0f"),
+        },
+    )
 
     st.markdown("##### עדכון סטטוס תשלום")
     row_labels: list[str] = []
@@ -3979,16 +4022,26 @@ def _show_finance_collection_dashboard() -> None:
     )
     r0 = deduped.iloc[int(selected_ix)]
     adv_default = _payment_marked_yes(r0.get("מקדמה שולמה"))
+    adv_amt_default = _parse_currency_amount(r0.get("סכום מקדמה"))
     final_default = _payment_marked_yes(r0.get("גמר חשבון שולם"))
 
-    cb1, cb2 = st.columns(2)
-    with cb1:
+    adv1, adv2, cb_final = st.columns([1, 1, 1])
+    with adv1:
+        adv_amt_in = st.number_input(
+            "סכום מקדמה ששולם (₪)",
+            min_value=0.0,
+            value=float(adv_amt_default),
+            step=100.0,
+            format="%.0f",
+            key=f"finance_pay_adv_amt_{selected_ix}",
+        )
+    with adv2:
         adv_ok = st.checkbox(
             "מקדמה שולמה",
             value=adv_default,
             key=f"finance_pay_adv_{selected_ix}",
         )
-    with cb2:
+    with cb_final:
         final_ok = st.checkbox(
             "גמר חשבון שולם",
             value=final_default,
@@ -4012,7 +4065,8 @@ def _show_finance_collection_dashboard() -> None:
             if not _quote_versions_equivalent_for_match(version_v, (qr.get("Version") or "").strip()):
                 continue
             merged = {c: (qr.get(c) or "") for c in QUOTES_CSV_COLUMNS}
-            merged["מקדמה שולמה"] = "כן" if adv_ok else "לא"
+            merged["סכום מקדמה"] = _format_advance_amount_storage(adv_amt_in)
+            merged["מקדמה שולמה"] = "כן" if (adv_ok or adv_amt_in > 0) else "לא"
             merged["גמר חשבון שולם"] = "כן" if final_ok else "לא"
             all_rows[i] = merged
             updated = True
