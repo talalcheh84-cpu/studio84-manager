@@ -746,6 +746,27 @@ def _ooo_event_title_from_row(row) -> str:
     return "🌴 חופשה/היעדרות"
 
 
+def _format_task_date_cell_for_edit_label(val) -> str:
+    """מחרוזת תאריך להצגה ב-selectbox של עריכת משימה (dd/mm/yyyy)."""
+    p = _parse_task_date(str(val or "").strip()) if val else None
+    if p is None:
+        return (str(val).strip() if val is not None else "") or "—"
+    return p.strftime("%d/%m/%Y")
+
+
+def _format_edit_task_select_label(r: dict) -> str:
+    """תווית לשורת בחירה ב-selectbox 'עריכת משימה קיימת' — חופשה בולטת, אחרת פרויקט|סוג|צוות."""
+    task_name = (r.get("שם משימה") or "").strip()
+    assignee_raw = str(r.get("הוקצה ל", "") or "")
+    team_key = _task_team_key_for_color(assignee_raw)
+    if "חופשה" in task_name:
+        start_str = _format_task_date_cell_for_edit_label(r.get("תאריך התחלה"))
+        end_str = _format_task_date_cell_for_edit_label(r.get("תאריך יעד"))
+        return f"🌴 חופשה: {team_key} | מ-{start_str} עד-{end_str}"
+    proj = _task_project_stored_to_label(str(r.get("פרויקט") or "").strip())
+    return f"{proj} | {task_name} | {team_key}"
+
+
 def _gantt_opacity_for_status(status_val) -> float:
     if (str(status_val or "").strip().lower()) == "הסתיים":
         return 0.5
@@ -5644,6 +5665,7 @@ def _render_edit_existing_task_block() -> None:
         return (s or "").strip().lower() not in ex_lower
 
     mask = tasks_df["סטטוס"].astype(str).apply(_is_active_status)
+    # כל המשימות הפעילות מהגיליון — כולל «כללי / סטודיו», «סטודיו» (חופשה) וסוג חופשה/היעדרות
     active_records = tasks_df.loc[mask].to_dict(orient="records")
 
     is_management_edit = st.session_state.get("is_management", False)
@@ -5671,10 +5693,7 @@ def _render_edit_existing_task_block() -> None:
         st.warning("אין חיבור לגוגל שיטס — לא ניתן לערוך משימות עד שהחיבור יוחזר.")
         return
 
-    labels = [
-        f"{(r.get('שם משימה') or '').strip()} | {(r.get('פרויקט') or '').strip()} | {(r.get('הוקצה ל') or '').strip()}"
-        for r in active_records
-    ]
+    labels = [_format_edit_task_select_label(r) for r in active_records]
     pick = st.selectbox(
         "בחר משימה פעילה",
         options=list(range(len(active_records))),
@@ -5715,12 +5734,26 @@ def _render_edit_existing_task_block() -> None:
     if display_project not in project_opts:
         project_opts = list(dict.fromkeys(project_opts + [display_project]))
 
+    cur_task_type = (sel.get("שם משימה") or "").strip()
+    type_opts = list(TASK_TYPE_OPTIONS)
+    if cur_task_type and cur_task_type not in type_opts:
+        type_opts = list(dict.fromkeys(type_opts + [cur_task_type]))
+    type_index = type_opts.index(cur_task_type) if cur_task_type in type_opts else 0
+
     with st.form("edit_task_google_sheet_form"):
         st.text_input(
             "תיאור משימה",
             value=(sel.get("תיאור המשימה") or ""),
             key=f"edit_gs_desc_{tid}",
         )
+        st.selectbox(
+            "סוג משימה",
+            options=type_opts,
+            index=type_index,
+            key=f"edit_gs_type_{tid}",
+        )
+        if st.session_state.get(f"edit_gs_type_{tid}") == TASK_TYPE_OOO:
+            st.caption("חופשה/היעדרות נשמרת תחת פרויקט «סטודיו» (כמו בהקצאת משימה חדשה).")
         proj_pick_index = (
             project_opts.index(display_project)
             if display_project in project_opts
@@ -5765,9 +5798,14 @@ def _render_edit_existing_task_block() -> None:
         new_due = st.session_state.get(f"edit_gs_due_{tid}")
         new_status = st.session_state.get(f"edit_gs_status_{tid}")
         new_project_raw = st.session_state.get(f"edit_gs_project_{tid}")
+        new_task_type = (st.session_state.get(f"edit_gs_type_{tid}") or "").strip()
         new_project = _task_project_label_to_stored(str(new_project_raw or ""))
+        if new_task_type == TASK_TYPE_OOO:
+            new_project = TASKS_PROJECT_OOO_DEFAULT
         if new_assignee is None or new_status is None or new_due is None or new_start is None:
             st.error("חסרים ערכים בטופס — נסה שוב.")
+        elif not new_task_type:
+            st.error("חסר סוג משימה — נסה שוב.")
         else:
             full_rows = read_tasks()
             row_idx = _find_task_row_index_in_full_list(full_rows, sel)
@@ -5776,6 +5814,7 @@ def _render_edit_existing_task_block() -> None:
             else:
                 updated = dict(full_rows[row_idx])
                 updated["תיאור המשימה"] = new_desc
+                updated["שם משימה"] = new_task_type
                 updated["פרויקט"] = new_project
                 updated["הוקצה ל"] = new_assignee
                 updated["תאריך התחלה"] = new_start.strftime("%Y-%m-%d")
