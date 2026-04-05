@@ -129,6 +129,8 @@ CONFIG_PATH = BASE_DIR / "config.json"
 PROJECTS_ROOT = Path(os.path.join(CURRENT_DIR, "Projects"))
 QUOTES_ROOT = BASE_DIR / "Quotes"
 TEMPLATE_PATH = BASE_DIR / "quote_template.docx"
+# לוגו סטודיו ל-PDF וכו׳ — קובץ ברירת מחדל תחת logo/ (כמו חומרי עיצוב)
+STUDIO_LOGO_PATH = BASE_DIR / "logo" / "logo.png"
 
 # Legacy paths (for backward compatibility when searching)
 QUOTES_PENDING = QUOTES_ROOT / "Pending"
@@ -3952,6 +3954,14 @@ def _pdf_bidi_text(s: str) -> str:
         return str(s)
 
 
+def _resolve_studio_logo_path() -> Path | None:
+    """נתיב ללוגו החברה אם הקובץ קיים (logo/logo.png או logo.png בשורש)."""
+    for p in (STUDIO_LOGO_PATH, BASE_DIR / "logo.png"):
+        if p.is_file():
+            return p
+    return None
+
+
 def _studio_transaction_invoice_footer_text() -> str:
     """ניתן לעקוף ב-.streamlit/secrets.toml: transaction_invoice_footer = '''...'''"""
     try:
@@ -3990,13 +4000,36 @@ def build_transaction_invoice_pdf_bytes(
     pdf.add_font("Hebrew", "B", str(font_bold))
 
     left_m = 12
-    pdf.set_margins(left_m, 12, left_m)
-    pdf.set_xy(left_m, 12)
+    logo_path = _resolve_studio_logo_path()
+    logo_drawn = False
+    header_y = 12.0
+    if logo_path:
+        try:
+            img_info = pdf.image(str(logo_path), x=10, y=8, w=40)
+            if hasattr(img_info, "rendered_height"):
+                h_mm = float(img_info.rendered_height)
+            elif isinstance(img_info, (int, float)):
+                h_mm = float(img_info)
+            else:
+                h_mm = 18.0
+            header_y = 8.0 + h_mm + 5.0
+            logo_drawn = True
+        except Exception:
+            logo_drawn = False
+            header_y = 12.0
 
-    pdf.set_font("Hebrew", "B", 17)
-    pdf.cell(95, 9, "STUDIO 84", align="L")
-    pdf.set_font("Hebrew", "B", 14)
-    pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
+    top_margin = max(12, int(header_y))
+    pdf.set_margins(left_m, top_margin, left_m)
+    pdf.set_xy(left_m, header_y)
+
+    if logo_drawn:
+        pdf.set_font("Hebrew", "B", 14)
+        pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
+    else:
+        pdf.set_font("Hebrew", "B", 17)
+        pdf.cell(95, 9, "STUDIO 84", align="L")
+        pdf.set_font("Hebrew", "B", 14)
+        pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
 
     pdf.set_font("Hebrew", "", 10)
     pdf.ln(2)
