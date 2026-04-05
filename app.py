@@ -22,6 +22,8 @@ from urllib.parse import quote
 from fpdf import FPDF
 from bidi.algorithm import get_display
 
+import arabic_reshaper
+
 import dropbox
 try:
     from dropbox.common import PathRoot
@@ -3918,9 +3920,28 @@ FINANCE_QUOTE_CANCELLED_STATUSES = frozenset({"Rejected"})
 # דרישת תשלום / חשבון עסקה — מע"מ (חשבונית עסקה בישראל)
 TRANSACTION_INVOICE_VAT_RATE = 0.17
 
+# פרטי חברה ב-PDF חשבון עסקה (סטודיו 84)
+STUDIO_INVOICE_COMPANY_NAME = 'סטודיו 84 בע"מ'
+STUDIO_INVOICE_COMPANY_ID = "515286241"
+STUDIO_INVOICE_ADDRESS = "הרצל 158, תל אביב"
+STUDIO_INVOICE_PHONE = "054-4416341"
+STUDIO_INVOICE_EMAIL = "office@studio84.co.il"
+STUDIO_INVOICE_BANK_LINE = "בנק לאומי (10), סניף 806, חשבון 111111/11"
+
 
 def _resolve_hebrew_ttf_font_pair() -> tuple[Path | None, Path | None]:
-    """נתיבים לפונט רגיל ומודגש לעברית (Arial/Segoe ב-Windows, DejaVu בלינוקס)."""
+    """פונט עברי: קודם מתיקיית הפרויקט (fonts/ או שורש), אחר כך מערכת."""
+    proj_fonts = BASE_DIR / "fonts"
+    project_pairs: list[tuple[Path, Path]] = [
+        (proj_fonts / "Heebo-Regular.ttf", proj_fonts / "Heebo-Bold.ttf"),
+        (proj_fonts / "NotoSansHebrew-Regular.ttf", proj_fonts / "NotoSansHebrew-Bold.ttf"),
+        (BASE_DIR / "Heebo-Regular.ttf", BASE_DIR / "Heebo-Bold.ttf"),
+        (BASE_DIR / "arial.ttf", BASE_DIR / "arialbd.ttf"),
+    ]
+    for reg, bd in project_pairs:
+        if reg.is_file():
+            return reg, bd if bd.is_file() else reg
+
     windir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     candidates_reg = [
         windir / "arial.ttf",
@@ -3946,12 +3967,17 @@ def _resolve_hebrew_ttf_font_pair() -> tuple[Path | None, Path | None]:
 
 
 def _pdf_bidi_text(s: str) -> str:
+    """עיבוד עברית ל-PDF: reshape + bidi (get_display)."""
     if not s:
         return ""
     try:
-        return get_display(str(s))
+        reshaped = arabic_reshaper.reshape(str(s))
+        return get_display(reshaped)
     except Exception:
-        return str(s)
+        try:
+            return get_display(str(s))
+        except Exception:
+            return str(s)
 
 
 def _resolve_studio_logo_path() -> Path | None:
@@ -3963,7 +3989,7 @@ def _resolve_studio_logo_path() -> Path | None:
 
 
 def _studio_transaction_invoice_footer_text() -> str:
-    """ניתן לעקוף ב-.streamlit/secrets.toml: transaction_invoice_footer = '''...'''"""
+    """שורת פוטר אחת (התקשרות + בנק). עקיפה ב-.streamlit/secrets.toml: transaction_invoice_footer"""
     try:
         ft = st.secrets.get("transaction_invoice_footer", "")
         if isinstance(ft, str) and ft.strip():
@@ -3971,9 +3997,27 @@ def _studio_transaction_invoice_footer_text() -> str:
     except Exception:
         pass
     return (
-        "בנק הפועלים | סניף 123 | חשבון 123456\n"
-        "עוסק מורשה: 123456789"
+        f'{STUDIO_INVOICE_COMPANY_NAME} | ח.פ {STUDIO_INVOICE_COMPANY_ID} | {STUDIO_INVOICE_ADDRESS} | '
+        f"{STUDIO_INVOICE_PHONE} | {STUDIO_INVOICE_EMAIL} | {STUDIO_INVOICE_BANK_LINE}"
     )
+
+
+def _transaction_invoice_draw_footer(pdf: FPDF, footer_text: str, left_m: float, page_w: float) -> None:
+    """קו מפריד דק ותחתית עם פרטי התקשרות ובנק."""
+    pdf.set_auto_page_break(auto=False)
+    margin_footer = 18
+    pdf.set_y(-margin_footer)
+    y_line = pdf.get_y()
+    pdf.set_draw_color(190, 190, 190)
+    pdf.set_line_width(0.2)
+    pdf.line(left_m, y_line, page_w - left_m, y_line)
+    pdf.ln(2)
+    pdf.set_xy(left_m, pdf.get_y())
+    pdf.set_font("Hebrew", "", 7.5)
+    pdf.set_text_color(60, 60, 60)
+    pdf.multi_cell(0, 5, _pdf_bidi_text(footer_text.strip()), align="C")
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_auto_page_break(auto=True, margin=14)
 
 
 def build_transaction_invoice_pdf_bytes(
@@ -3986,66 +4030,90 @@ def build_transaction_invoice_pdf_bytes(
     total_with_vat: float,
     footer_text: str,
 ) -> bytes:
-    """יוצר PDF של חשבון עסקה עם טקסט עברי (TTF + bidi)."""
+    """יוצר PDF של חשבון עסקה לפי תבנית סטודיו 84 (TTF + reshape + bidi)."""
     font_reg, font_bold = _resolve_hebrew_ttf_font_pair()
     if not font_reg:
         raise RuntimeError(
-            "לא נמצא פונט TTF לעברית. התקן Arial/Segoe ב-Windows או DejaVu בלינוקס."
+            "לא נמצא פונט TTF לעברית. הוסיפו Heebo/Arial לתיקיית fonts/ בפרויקט, או התקינו Arial/Segoe ב-Windows."
         )
 
+    left_m = 12.0
+    page_w = 210.0
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=14)
+    pdf.set_auto_page_break(auto=True, margin=28)
     pdf.add_page()
+    pdf.set_margins(left_m, 15, left_m)
     pdf.add_font("Hebrew", "", str(font_reg))
     pdf.add_font("Hebrew", "B", str(font_bold))
 
-    left_m = 12
     logo_path = _resolve_studio_logo_path()
+    logo_bottom = 10.0
     logo_drawn = False
-    header_y = 12.0
     if logo_path:
         try:
-            img_info = pdf.image(str(logo_path), x=10, y=8, w=40)
+            img_info = pdf.image(str(logo_path), x=10, y=10, w=45)
             if hasattr(img_info, "rendered_height"):
                 h_mm = float(img_info.rendered_height)
             elif isinstance(img_info, (int, float)):
                 h_mm = float(img_info)
             else:
                 h_mm = 18.0
-            header_y = 8.0 + h_mm + 5.0
+            logo_bottom = 10.0 + h_mm
             logo_drawn = True
         except Exception:
             logo_drawn = False
-            header_y = 12.0
+            logo_bottom = 10.0
 
-    top_margin = max(12, int(header_y))
-    pdf.set_margins(left_m, top_margin, left_m)
+    if not logo_drawn:
+        pdf.set_xy(10, 10)
+        pdf.set_font("Hebrew", "B", 14)
+        pdf.cell(45, 8, _pdf_bidi_text("Studio 84"), align="L")
+
+    company_x = 62.0
+    company_w = page_w - company_x - left_m
+    pdf.set_xy(company_x, 10)
+    pdf.set_font("Hebrew", "B", 10)
+    pdf.cell(company_w, 5, _pdf_bidi_text(STUDIO_INVOICE_COMPANY_NAME), align="R", ln=1)
+    pdf.set_x(company_x)
+    pdf.set_font("Hebrew", "", 9)
+    pdf.cell(company_w, 5, _pdf_bidi_text(f"ח.פ {STUDIO_INVOICE_COMPANY_ID}"), align="R", ln=1)
+    pdf.set_x(company_x)
+    pdf.cell(company_w, 5, _pdf_bidi_text(STUDIO_INVOICE_ADDRESS), align="R", ln=1)
+    pdf.set_x(company_x)
+    pdf.cell(company_w, 5, _pdf_bidi_text(f"טלפון: {STUDIO_INVOICE_PHONE}"), align="R", ln=1)
+    pdf.set_x(company_x)
+    pdf.cell(company_w, 5, _pdf_bidi_text(f"דוא״ל: {STUDIO_INVOICE_EMAIL}"), align="R", ln=1)
+    company_bottom = pdf.get_y()
+
+    header_y = max(logo_bottom, company_bottom) + 8.0
     pdf.set_xy(left_m, header_y)
-
-    if logo_drawn:
-        pdf.set_font("Hebrew", "B", 14)
-        pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
-    else:
-        pdf.set_font("Hebrew", "B", 17)
-        pdf.cell(95, 9, "STUDIO 84", align="L")
-        pdf.set_font("Hebrew", "B", 14)
-        pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
-
-    pdf.set_font("Hebrew", "", 10)
-    pdf.ln(2)
-    pdf.cell(0, 7, _pdf_bidi_text(f"לכבוד: {client_name}"), align="R", ln=1)
-    pdf.cell(0, 7, _pdf_bidi_text(f"הנדון: {project_name}"), align="R", ln=1)
-    pdf.cell(0, 6, _pdf_bidi_text(f"תאריך: {date.today().strftime('%d/%m/%Y')}"), align="R", ln=1)
+    pdf.set_font("Hebrew", "B", 18)
+    pdf.cell(0, 10, _pdf_bidi_text("חשבון עסקה"), align="C", ln=1)
+    pdf.set_font("Hebrew", "", 11)
+    pdf.cell(0, 6, _pdf_bidi_text(f"מספר {serial}"), align="C", ln=1)
+    pdf.cell(0, 6, _pdf_bidi_text(f"תאריך {date.today().strftime('%d/%m/%Y')}"), align="C", ln=1)
     pdf.ln(4)
 
-    # כותרות טבלה
-    w_desc, w_qty, w_price, w_line = 88, 22, 28, 32
+    pdf.set_font("Hebrew", "", 10)
+    pdf.cell(0, 7, _pdf_bidi_text("לכבוד:"), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(client_name), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f"הנדון: {project_name}"), align="R", ln=1)
+    pdf.ln(5)
+    pdf.set_x(left_m)
+
+    # טבלת סעיפים — תיאור | כמות | מחיר יחידה | סה"כ
+    w_desc = 78.0
+    w_qty = 22.0
+    w_unit = 38.0
+    w_line = 38.0
+    row_h = 8.0
     pdf.set_font("Hebrew", "B", 10)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(w_desc, 8, _pdf_bidi_text("תיאור"), border=1, align="C", fill=True)
-    pdf.cell(w_qty, 8, _pdf_bidi_text("כמות"), border=1, align="C", fill=True)
-    pdf.cell(w_price, 8, _pdf_bidi_text("מחיר (₪)"), border=1, align="C", fill=True)
-    pdf.cell(w_line, 8, _pdf_bidi_text("סכום (₪)"), border=1, align="C", fill=True, ln=1)
+    pdf.set_fill_color(245, 245, 245)
+    pdf.set_draw_color(200, 200, 200)
+    pdf.cell(w_desc, row_h, _pdf_bidi_text("תיאור"), border=1, align="R", fill=True)
+    pdf.cell(w_qty, row_h, _pdf_bidi_text("כמות"), border=1, align="R", fill=True)
+    pdf.cell(w_unit, row_h, _pdf_bidi_text("מחיר יחידה"), border=1, align="R", fill=True)
+    pdf.cell(w_line, row_h, _pdf_bidi_text('סה"כ'), border=1, align="R", fill=True, ln=1)
 
     pdf.set_font("Hebrew", "", 9)
     for _, row in line_df.iterrows():
@@ -4061,21 +4129,19 @@ def build_transaction_invoice_pdf_bytes(
         line_total = qty * unit_price
         if not desc and line_total == 0:
             continue
-        pdf.cell(w_desc, 8, _pdf_bidi_text(desc[:120]), border=1, align="R")
-        pdf.cell(w_qty, 8, f"{qty:g}", border=1, align="C")
-        pdf.cell(w_price, 8, f"{unit_price:,.0f}", border=1, align="C")
-        pdf.cell(w_line, 8, f"{line_total:,.0f}", border=1, align="C", ln=1)
+        pdf.cell(w_desc, row_h, _pdf_bidi_text(desc[:120]), border=1, align="R")
+        pdf.cell(w_qty, row_h, _pdf_bidi_text(f"{qty:g}"), border=1, align="R")
+        pdf.cell(w_unit, row_h, _pdf_bidi_text(f"{unit_price:,.0f} ₪"), border=1, align="R")
+        pdf.cell(w_line, row_h, _pdf_bidi_text(f"{line_total:,.0f} ₪"), border=1, align="R", ln=1)
 
-    pdf.ln(3)
+    pdf.ln(4)
     pdf.set_font("Hebrew", "", 10)
-    pdf.cell(0, 7, _pdf_bidi_text(f"סה״כ לפני מע״מ: {subtotal_ex_vat:,.2f} ₪"), align="R", ln=1)
-    pdf.cell(0, 7, _pdf_bidi_text(f"מע״מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%): {vat_amount:,.2f} ₪"), align="R", ln=1)
-    pdf.set_font("Hebrew", "B", 11)
-    pdf.cell(0, 8, _pdf_bidi_text(f"סה״כ לתשלום כולל מע״מ: {total_with_vat:,.2f} ₪"), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f'סה"כ לפני מע"מ: {subtotal_ex_vat:,.2f} ₪'), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f'מע"מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%): {vat_amount:,.2f} ₪'), align="R", ln=1)
+    pdf.set_font("Hebrew", "B", 12)
+    pdf.cell(0, 9, _pdf_bidi_text(f'סה"כ לתשלום: {total_with_vat:,.2f} ₪'), align="R", ln=1)
 
-    pdf.ln(6)
-    pdf.set_font("Hebrew", "", 9)
-    pdf.multi_cell(0, 5, _pdf_bidi_text(footer_text.strip()), align="R")
+    _transaction_invoice_draw_footer(pdf, footer_text, left_m, page_w)
 
     out = pdf.output(dest="S")
     if isinstance(out, str):
@@ -4272,13 +4338,20 @@ def _show_finance_collection_dashboard() -> None:
                     key=f"finance_demand_pdf_dl_{demand_ix}",
                 )
 
-            st.markdown("###### קישור לתיקיית תוצרים (דרופבוקס)")
+            st.markdown("##### קישור דרופבוקס — להדבקה בגוף המייל")
+            st.caption(
+                "העתיקו את הקישור למטה ושלחו ללקוח עם חשבון העסקה (הקישור אינו מודפס ב-PDF)."
+            )
+            if link_line.strip() and link_line != "לא הוזן קישור":
+                st.success(link_line)
+            else:
+                st.warning(link_line)
+            st.code(link_line, language=None)
             st.text_area(
-                "קישור להעתקה ללקוח",
+                "העתקה נוחה (בחירה מלאה)",
                 value=link_line,
-                height=100,
-                disabled=True,
-                help="בחרו את כל הטקסט (Ctrl+A) והעתיקו לגוף המייל.",
+                height=88,
+                help="Ctrl+A ואז Ctrl+C להעתקה לגוף המייל.",
                 key=f"finance_demand_dbx_{demand_ix}",
             )
 
