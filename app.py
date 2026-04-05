@@ -5797,6 +5797,27 @@ def _render_edit_existing_task_block() -> None:
         )
         submitted = st.form_submit_button("עדכן משימה בגוגל שיטס")
 
+    if st.button("🗑️ מחק משימה זו", type="primary", key=f"delete_task_gs_{tid}"):
+        full_rows_del = read_tasks()
+        if not full_rows_del:
+            st.error("אין משימות במערכת.")
+        else:
+            tasks_df_del = pd.DataFrame(full_rows_del, columns=TASKS_LOG_COLUMNS).reindex(
+                columns=TASKS_LOG_COLUMNS, fill_value=""
+            ).fillna("")
+            if hasattr(tasks_df_del.columns, "str"):
+                tasks_df_del.columns = tasks_df_del.columns.str.strip()
+            row_idx_del = _find_task_row_index_in_full_list(full_rows_del, sel)
+            if row_idx_del is None:
+                st.error("לא נמצאה המשימה בגיליון (אולי נמחקה או עודכנה). רענן ונסה שוב.")
+            else:
+                updated_del = tasks_df_del.drop(index=row_idx_del).reset_index(drop=True)
+                write_tasks(updated_del.to_dict(orient="records"), skip_rerun=True)
+                st.cache_data.clear()
+                st.success("המשימה נמחקה מהמערכת.")
+                time.sleep(1)
+                st.rerun()
+
     if submitted:
         new_desc = (st.session_state.get(f"edit_gs_desc_{tid}") or "").strip()
         new_assignee = st.session_state.get(f"edit_gs_assignee_{tid}")
@@ -6179,104 +6200,6 @@ def show_tasks_page() -> None:
                         time.sleep(1)
                         st.rerun()
 
-        # --- אנשי קשר לפרויקט ---
-        st.divider()
-        st.subheader("📞 אנשי קשר לפרויקט")
-        projects_options = _get_active_projects_options()
-        if projects_options:
-            with st.expander("➕ הוסף איש קשר", expanded=True):
-                with st.form("add_contact_form"):
-                    contact_project = st.selectbox(
-                        "פרויקט",
-                        options=projects_options,
-                        key="contact_project",
-                    )
-                    role_category = st.selectbox(
-                        "סוג הגורם",
-                        options=ROLE_CATEGORIES,
-                        key="contact_role",
-                    )
-                    office_name = st.text_input(
-                        "שם המשרד/החברה",
-                        placeholder="למשל: יסקי מור סיון אדריכלים (לקוח פרטי: השאר ריק או כתוב 'פרטי')",
-                        key="contact_office",
-                    )
-                    contact_name = st.text_input(
-                        "שם איש הקשר",
-                        placeholder="למשל: דנה מנהלת הפרויקט",
-                        key="contact_name",
-                    )
-                    contact_email = st.text_input("מייל", key="contact_email")
-                    contact_phone = st.text_input("טלפון", key="contact_phone")
-                    contact_notes = st.text_area("הערות", key="contact_notes", height=80)
-                    add_contact_btn = st.form_submit_button("הוסף איש קשר")
-
-                if add_contact_btn:
-                    if not contact_name.strip():
-                        st.warning("נא להזין שם איש קשר.")
-                    elif not contact_project:
-                        st.warning("נא לבחור פרויקט.")
-                    else:
-                        existing = read_project_contacts()
-                        row = {
-                            "Project": contact_project,
-                            "Role Category": role_category,
-                            "Office/Company Name": (office_name or "").strip(),
-                            "Contact Name": contact_name.strip(),
-                            "Email": (contact_email or "").strip(),
-                            "Phone": (contact_phone or "").strip(),
-                            "Notes": (contact_notes or "").strip(),
-                        }
-                        existing.append(row)
-                        write_project_contacts(existing)
-                        st.success("איש הקשר נוסף בהצלחה!")
-                        st.rerun()
-
-            # תצוגה מקובצת לפי סוג הגורם
-            contacts_rows = read_project_contacts()
-            had_any_contacts = bool(contacts_rows)
-            if contacts_rows:
-                filter_project = st.selectbox(
-                    "סנן לפי פרויקט",
-                    options=["הכל"] + projects_options,
-                    key="contacts_filter_project",
-                )
-                if filter_project != "הכל":
-                    contacts_rows = [r for r in contacts_rows if r.get("Project") == filter_project]
-
-            if contacts_rows:
-                # מיון וקיבוץ לפי Role Category
-                df_contacts = pd.DataFrame(contacts_rows, columns=PROJECT_CONTACTS_COLUMNS)
-                df_contacts = df_contacts.sort_values(
-                    ["Role Category", "Office/Company Name", "Contact Name"],
-                    ascending=[True, True, True],
-                )
-                for role in ROLE_CATEGORIES:
-                    group_df = df_contacts[df_contacts["Role Category"] == role]
-                    if not group_df.empty:
-                        with st.expander(f"**{role}** ({len(group_df)} אנשי קשר)", expanded=True):
-                            st.dataframe(
-                                group_df,
-                                hide_index=True,
-                                use_container_width=True,
-                                column_config={
-                                    "Project": st.column_config.TextColumn("פרויקט"),
-                                    "Role Category": st.column_config.TextColumn("סוג הגורם"),
-                                    "Office/Company Name": st.column_config.TextColumn("משרד/חברה"),
-                                    "Contact Name": st.column_config.TextColumn("איש קשר"),
-                                    "Email": st.column_config.TextColumn("מייל"),
-                                    "Phone": st.column_config.TextColumn("טלפון"),
-                                    "Notes": st.column_config.TextColumn("הערות"),
-                                },
-                            )
-            else:
-                if had_any_contacts:
-                    st.info("אין אנשי קשר לפרויקט שנבחר. נסה לבחור 'הכל' או פרויקט אחר.")
-                else:
-                    st.info("אין אנשי קשר. הוסף איש קשר חדש למעלה.")
-        else:
-            st.info("אין פרויקטים פעילים. הוסף פרויקטים כדי לנהל אנשי קשר.")
-
     elif sub_nav == "לוח עומסים (גאנט ויומן) 📊":
         st.subheader("לוח עומסים צוותי - לוח שנה אינטראקטיבי")
 
@@ -6446,6 +6369,106 @@ def show_contacts_page() -> None:
         "כאן מנהלים את ספר הטלפונים של הסטודיו. הנתונים מכאן ישמשו לשליחת חומרים וחשבוניות."
     )
     st.markdown("---")
+
+    # --- אנשי קשר לפרויקט (גיליון project_contacts) ---
+    st.divider()
+    st.subheader("📞 אנשי קשר לפרויקט")
+    projects_options = _get_active_projects_options()
+    if projects_options:
+        with st.expander("➕ הוסף איש קשר", expanded=True):
+            with st.form("add_contact_form"):
+                contact_project = st.selectbox(
+                    "פרויקט",
+                    options=projects_options,
+                    key="contact_project",
+                )
+                role_category = st.selectbox(
+                    "סוג הגורם",
+                    options=ROLE_CATEGORIES,
+                    key="contact_role",
+                )
+                office_name = st.text_input(
+                    "שם המשרד/החברה",
+                    placeholder="למשל: יסקי מור סיון אדריכלים (לקוח פרטי: השאר ריק או כתוב 'פרטי')",
+                    key="contact_office",
+                )
+                contact_name = st.text_input(
+                    "שם איש הקשר",
+                    placeholder="למשל: דנה מנהלת הפרויקט",
+                    key="contact_name",
+                )
+                contact_email = st.text_input("מייל", key="contact_email")
+                contact_phone = st.text_input("טלפון", key="contact_phone")
+                contact_notes = st.text_area("הערות", key="contact_notes", height=80)
+                add_contact_btn = st.form_submit_button("הוסף איש קשר")
+
+            if add_contact_btn:
+                if not contact_name.strip():
+                    st.warning("נא להזין שם איש קשר.")
+                elif not contact_project:
+                    st.warning("נא לבחור פרויקט.")
+                else:
+                    existing = read_project_contacts()
+                    row = {
+                        "Project": contact_project,
+                        "Role Category": role_category,
+                        "Office/Company Name": (office_name or "").strip(),
+                        "Contact Name": contact_name.strip(),
+                        "Email": (contact_email or "").strip(),
+                        "Phone": (contact_phone or "").strip(),
+                        "Notes": (contact_notes or "").strip(),
+                    }
+                    existing.append(row)
+                    write_project_contacts(existing)
+                    st.success("איש הקשר נוסף בהצלחה!")
+                    st.rerun()
+
+        # תצוגה מקובצת לפי סוג הגורם
+        contacts_rows = read_project_contacts()
+        had_any_contacts = bool(contacts_rows)
+        if contacts_rows:
+            filter_project = st.selectbox(
+                "סנן לפי פרויקט",
+                options=["הכל"] + projects_options,
+                key="contacts_filter_project",
+            )
+            if filter_project != "הכל":
+                contacts_rows = [r for r in contacts_rows if r.get("Project") == filter_project]
+
+        if contacts_rows:
+            # מיון וקיבוץ לפי Role Category
+            df_contacts = pd.DataFrame(contacts_rows, columns=PROJECT_CONTACTS_COLUMNS)
+            df_contacts = df_contacts.sort_values(
+                ["Role Category", "Office/Company Name", "Contact Name"],
+                ascending=[True, True, True],
+            )
+            for role in ROLE_CATEGORIES:
+                group_df = df_contacts[df_contacts["Role Category"] == role]
+                if not group_df.empty:
+                    with st.expander(f"**{role}** ({len(group_df)} אנשי קשר)", expanded=True):
+                        st.dataframe(
+                            group_df,
+                            hide_index=True,
+                            use_container_width=True,
+                            column_config={
+                                "Project": st.column_config.TextColumn("פרויקט"),
+                                "Role Category": st.column_config.TextColumn("סוג הגורם"),
+                                "Office/Company Name": st.column_config.TextColumn("משרד/חברה"),
+                                "Contact Name": st.column_config.TextColumn("איש קשר"),
+                                "Email": st.column_config.TextColumn("מייל"),
+                                "Phone": st.column_config.TextColumn("טלפון"),
+                                "Notes": st.column_config.TextColumn("הערות"),
+                            },
+                        )
+        else:
+            if had_any_contacts:
+                st.info("אין אנשי קשר לפרויקט שנבחר. נסה לבחור 'הכל' או פרויקט אחר.")
+            else:
+                st.info("אין אנשי קשר. הוסף איש קשר חדש למעלה.")
+    else:
+        st.info("אין פרויקטים פעילים. הוסף פרויקטים כדי לנהל אנשי קשר.")
+
+    st.divider()
 
     with st.form("הוספת איש קשר חדש", clear_on_submit=False):
         col1, col2 = st.columns(2)
