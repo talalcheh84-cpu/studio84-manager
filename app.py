@@ -3993,6 +3993,45 @@ def _show_finance_collection_dashboard() -> None:
     c3.metric("יתרת חוב פתוחה / צפי הכנסה", f"₪{open_balance:,.0f}")
     c4.metric("סך הרווח הגולמי הצפוי (פרויקטים פעילים)", f"₪{total_expected_gross:,.0f}")
 
+    with st.expander("📄 הפקת דרישת תשלום (חשבון עסקה) ללקוח", expanded=False):
+        active_for_demand = deduped[
+            deduped["Status"].fillna("").astype(str).str.strip().isin(["Signed", "הומר לפרויקט"])
+        ].copy().reset_index(drop=True)
+        if active_for_demand.empty:
+            st.caption("אין פרויקטים פעילים (Signed / הומר לפרויקט) לבחירה.")
+        else:
+            demand_labels: list[str] = []
+            for _, r in active_for_demand.iterrows():
+                c_l = str(r.get("Client") or "").strip()
+                p_l = str(r.get("Project") or "").strip()
+                demand_labels.append(f"{p_l} — {c_l}")
+            demand_ix = st.selectbox(
+                "בחר פרויקט פעיל",
+                options=list(range(len(active_for_demand))),
+                format_func=lambda i: demand_labels[i] if i < len(demand_labels) else str(i),
+                key="finance_payment_demand_project_select",
+            )
+            r_dem = active_for_demand.iloc[int(demand_ix)]
+            client_dem = str(r_dem.get("Client") or "").strip()
+            project_dem = str(r_dem.get("Project") or "").strip()
+            rdict_dem = r_dem.to_dict()
+            price_dem = _extract_total_from_quote_row(rdict_dem)
+            adv_dem = min(_parse_currency_amount(r_dem.get("סכום מקדמה")), price_dem)
+            balance_dem = price_dem - adv_dem
+            _main_u, _up_u, drop_deliv_dem = find_project_dropbox_links_for_client(client_dem, project_dem)
+            link_line = (drop_deliv_dem or "").strip() or "לא הוזן קישור"
+            demand_body = (
+                f"לכבוד: {client_dem}\n"
+                f"הנדון: דרישת תשלום - פרויקט {project_dem}\n\n"
+                f"מצורפת בזאת דרישת תשלום עבור סיום שלבי העבודה בפרויקט.\n"
+                f"היתרה לתשלום: {balance_dem:,.0f} ₪ (לא כולל מע'מ).\n\n"
+                f"ניתן לצפות ולהוריד את ההדמיות והתוצרים הסופיים בקישור הבא:\n"
+                f"{link_line}\n\n"
+                f"חשבונית מס קבלה תופק מיד עם קבלת התשלום."
+            )
+            st.caption("העתיקו את הטקסט למייל או למסמך — הוא מתעדכן אוטומטית בבחירת פרויקט אחר.")
+            st.code(demand_body, language=None)
+
     st.markdown("##### טבלת מעקב גבייה")
     table_rows = []
     for _, row in deduped.iterrows():
