@@ -16,7 +16,11 @@ import csv
 import json
 import subprocess
 import uuid
+import random
 from urllib.parse import quote
+
+from fpdf import FPDF
+from bidi.algorithm import get_display
 
 import dropbox
 try:
@@ -3909,6 +3913,142 @@ def show_quote_page() -> None:
 
 FINANCE_QUOTE_CANCELLED_STATUSES = frozenset({"Rejected"})
 
+# דרישת תשלום / חשבון עסקה — מע"מ (חשבונית עסקה בישראל)
+TRANSACTION_INVOICE_VAT_RATE = 0.17
+
+
+def _resolve_hebrew_ttf_font_pair() -> tuple[Path | None, Path | None]:
+    """נתיבים לפונט רגיל ומודגש לעברית (Arial/Segoe ב-Windows, DejaVu בלינוקס)."""
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    candidates_reg = [
+        windir / "arial.ttf",
+        windir / "segoeui.ttf",
+        windir / "david.ttf",
+    ]
+    candidates_bold = [
+        windir / "arialbd.ttf",
+        windir / "segoeuib.ttf",
+        windir / "davidbd.ttf",
+    ]
+    for reg in candidates_reg:
+        if reg.exists():
+            for bd in candidates_bold:
+                if bd.exists():
+                    return reg, bd
+            return reg, reg
+    linux_reg = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    linux_bd = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+    if linux_reg.exists():
+        return linux_reg, linux_bd if linux_bd.exists() else linux_reg
+    return None, None
+
+
+def _pdf_bidi_text(s: str) -> str:
+    if not s:
+        return ""
+    try:
+        return get_display(str(s))
+    except Exception:
+        return str(s)
+
+
+def _studio_transaction_invoice_footer_text() -> str:
+    """ניתן לעקוף ב-.streamlit/secrets.toml: transaction_invoice_footer = '''...'''"""
+    try:
+        ft = st.secrets.get("transaction_invoice_footer", "")
+        if isinstance(ft, str) and ft.strip():
+            return ft.strip()
+    except Exception:
+        pass
+    return (
+        "בנק הפועלים | סניף 123 | חשבון 123456\n"
+        "עוסק מורשה: 123456789"
+    )
+
+
+def build_transaction_invoice_pdf_bytes(
+    line_df: pd.DataFrame,
+    client_name: str,
+    project_name: str,
+    serial: str,
+    subtotal_ex_vat: float,
+    vat_amount: float,
+    total_with_vat: float,
+    footer_text: str,
+) -> bytes:
+    """יוצר PDF של חשבון עסקה עם טקסט עברי (TTF + bidi)."""
+    font_reg, font_bold = _resolve_hebrew_ttf_font_pair()
+    if not font_reg:
+        raise RuntimeError(
+            "לא נמצא פונט TTF לעברית. התקן Arial/Segoe ב-Windows או DejaVu בלינוקס."
+        )
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=14)
+    pdf.add_page()
+    pdf.add_font("Hebrew", "", str(font_reg))
+    pdf.add_font("Hebrew", "B", str(font_bold))
+
+    left_m = 12
+    pdf.set_margins(left_m, 12, left_m)
+    pdf.set_xy(left_m, 12)
+
+    pdf.set_font("Hebrew", "B", 17)
+    pdf.cell(95, 9, "STUDIO 84", align="L")
+    pdf.set_font("Hebrew", "B", 14)
+    pdf.cell(0, 9, _pdf_bidi_text(f"חשבון עסקה מס׳ {serial}"), align="R", ln=1)
+
+    pdf.set_font("Hebrew", "", 10)
+    pdf.ln(2)
+    pdf.cell(0, 7, _pdf_bidi_text(f"לכבוד: {client_name}"), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f"הנדון: {project_name}"), align="R", ln=1)
+    pdf.cell(0, 6, _pdf_bidi_text(f"תאריך: {date.today().strftime('%d/%m/%Y')}"), align="R", ln=1)
+    pdf.ln(4)
+
+    # כותרות טבלה
+    w_desc, w_qty, w_price, w_line = 88, 22, 28, 32
+    pdf.set_font("Hebrew", "B", 10)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(w_desc, 8, _pdf_bidi_text("תיאור"), border=1, align="C", fill=True)
+    pdf.cell(w_qty, 8, _pdf_bidi_text("כמות"), border=1, align="C", fill=True)
+    pdf.cell(w_price, 8, _pdf_bidi_text("מחיר (₪)"), border=1, align="C", fill=True)
+    pdf.cell(w_line, 8, _pdf_bidi_text("סכום (₪)"), border=1, align="C", fill=True, ln=1)
+
+    pdf.set_font("Hebrew", "", 9)
+    for _, row in line_df.iterrows():
+        desc = str(row.get("תיאור") or "").strip()
+        try:
+            qty = float(row.get("כמות") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        try:
+            unit_price = float(row.get("מחיר") or 0)
+        except (TypeError, ValueError):
+            unit_price = 0.0
+        line_total = qty * unit_price
+        if not desc and line_total == 0:
+            continue
+        pdf.cell(w_desc, 8, _pdf_bidi_text(desc[:120]), border=1, align="R")
+        pdf.cell(w_qty, 8, f"{qty:g}", border=1, align="C")
+        pdf.cell(w_price, 8, f"{unit_price:,.0f}", border=1, align="C")
+        pdf.cell(w_line, 8, f"{line_total:,.0f}", border=1, align="C", ln=1)
+
+    pdf.ln(3)
+    pdf.set_font("Hebrew", "", 10)
+    pdf.cell(0, 7, _pdf_bidi_text(f"סה״כ לפני מע״מ: {subtotal_ex_vat:,.2f} ₪"), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f"מע״מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%): {vat_amount:,.2f} ₪"), align="R", ln=1)
+    pdf.set_font("Hebrew", "B", 11)
+    pdf.cell(0, 8, _pdf_bidi_text(f"סה״כ לתשלום כולל מע״מ: {total_with_vat:,.2f} ₪"), align="R", ln=1)
+
+    pdf.ln(6)
+    pdf.set_font("Hebrew", "", 9)
+    pdf.multi_cell(0, 5, _pdf_bidi_text(footer_text.strip()), align="R")
+
+    out = pdf.output(dest="S")
+    if isinstance(out, str):
+        return out.encode("latin-1")
+    return bytes(out)
+
 
 def _finance_dedupe_quotes_df(quotes_df: pd.DataFrame) -> pd.DataFrame:
     """שורה אחת לכל (Client, Project) — הגרסה הגבוהה ביותר; רק הצעות שאינן מבוטלות."""
@@ -4020,17 +4160,94 @@ def _show_finance_collection_dashboard() -> None:
             balance_dem = price_dem - adv_dem
             _main_u, _up_u, drop_deliv_dem = find_project_dropbox_links_for_client(client_dem, project_dem)
             link_line = (drop_deliv_dem or "").strip() or "לא הוזן קישור"
-            demand_body = (
-                f"לכבוד: {client_dem}\n"
-                f"הנדון: דרישת תשלום - פרויקט {project_dem}\n\n"
-                f"מצורפת בזאת דרישת תשלום עבור סיום שלבי העבודה בפרויקט.\n"
-                f"היתרה לתשלום: {balance_dem:,.0f} ₪ (לא כולל מע'מ).\n\n"
-                f"ניתן לצפות ולהוריד את ההדמיות והתוצרים הסופיים בקישור הבא:\n"
-                f"{link_line}\n\n"
-                f"חשבונית מס קבלה תופק מיד עם קבלת התשלום."
+
+            st.caption(
+                "ערכו את הסעיפים לפי הצורך; ניתן להוסיף שורות (למשל תוספת מבטים או שעות עריכה). "
+                "הסכומים מחושבים ככמות × מחיר; המע״מ מחושב על הסה״כ לפני מע״מ."
             )
-            st.caption("העתיקו את הטקסט למייל או למסמך — הוא מתעדכן אוטומטית בבחירת פרויקט אחר.")
-            st.code(demand_body, language=None)
+            demand_df = pd.DataFrame(
+                [
+                    {
+                        "תיאור": f"תשלום עבור פרויקט {project_dem}",
+                        "כמות": 1.0,
+                        "מחיר": float(balance_dem),
+                    },
+                    {"תיאור": "", "כמות": 1.0, "מחיר": 0.0},
+                    {"תיאור": "", "כמות": 1.0, "מחיר": 0.0},
+                ]
+            )
+            edited_demand = st.data_editor(
+                demand_df,
+                column_config={
+                    "תיאור": st.column_config.TextColumn("תיאור", width="large"),
+                    "כמות": st.column_config.NumberColumn("כמות", min_value=0.0, step=0.5, format="%.2f"),
+                    "מחיר": st.column_config.NumberColumn("מחיר (₪)", min_value=0.0, step=50.0, format="%.0f"),
+                },
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                key=f"finance_demand_lines_{demand_ix}",
+            )
+
+            subtotal = 0.0
+            if edited_demand is not None and not edited_demand.empty:
+                ed = edited_demand.copy()
+                ed["כמות"] = pd.to_numeric(ed["כמות"], errors="coerce").fillna(0.0)
+                ed["מחיר"] = pd.to_numeric(ed["מחיר"], errors="coerce").fillna(0.0)
+                subtotal = float((ed["כמות"] * ed["מחיר"]).sum())
+            vat_amt = subtotal * TRANSACTION_INVOICE_VAT_RATE
+            total_pay = subtotal + vat_amt
+
+            tot1, tot2, tot3 = st.columns(3)
+            tot1.metric('סה"כ לפני מע"מ', f"₪{subtotal:,.0f}")
+            tot2.metric(
+                f'מע"מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%)',
+                f"₪{vat_amt:,.0f}",
+            )
+            tot3.metric('סה"כ לתשלום (כולל מע"מ)', f"₪{total_pay:,.0f}")
+
+            ss_serial = f"txn_inv_serial_{demand_ix}"
+            if ss_serial not in st.session_state:
+                st.session_state[ss_serial] = (
+                    f"{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+                )
+            serial = st.session_state[ss_serial]
+
+            pdf_bytes = b""
+            try:
+                footer_t = _studio_transaction_invoice_footer_text()
+                edf = edited_demand if edited_demand is not None else demand_df
+                pdf_bytes = build_transaction_invoice_pdf_bytes(
+                    edf,
+                    client_dem,
+                    project_dem,
+                    serial,
+                    subtotal,
+                    vat_amt,
+                    total_pay,
+                    footer_t,
+                )
+            except Exception as e:
+                st.error(f"שגיאה ביצירת PDF: {e}")
+
+            if pdf_bytes:
+                st.download_button(
+                    label="הורד PDF — חשבון עסקה",
+                    data=pdf_bytes,
+                    file_name=f"hesbon_iska_{serial}.pdf",
+                    mime="application/pdf",
+                    key=f"finance_demand_pdf_dl_{demand_ix}",
+                )
+
+            st.markdown("###### קישור לתיקיית תוצרים (דרופבוקס)")
+            st.text_area(
+                "קישור להעתקה ללקוח",
+                value=link_line,
+                height=100,
+                disabled=True,
+                help="בחרו את כל הטקסט (Ctrl+A) והעתיקו לגוף המייל.",
+                key=f"finance_demand_dbx_{demand_ix}",
+            )
 
     st.markdown("##### טבלת מעקב גבייה")
     table_rows = []
