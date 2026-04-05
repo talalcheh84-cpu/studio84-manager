@@ -668,6 +668,9 @@ TEAM_EMAILS = {
 }
 MANAGEMENT_USERS = frozenset({"טל", "ערן"})
 
+# ניווט ראשי (מנהלים) — תווית יחידה לרשימת ה-radio ול-branch של if main_nav
+NAV_MAIN_PROJECT_ROOM = "📊 חדר מצב (מוניטור פרויקטים)"
+
 # מיפוי שם משתמש ממסך ההתחברות (אנגלית, lower) → שם קנוני ב-TEAM_EMAILS / משימות.
 # לאחר הסרת בורר הזהות בסיידבר, current_user נקבע רק בכניסה — יש להרחיב כאן לפי שמות ב-secrets.
 LOGIN_USERNAME_TO_CURRENT_USER: dict[str, str] = {
@@ -941,6 +944,7 @@ QUOTES_CSV_COLUMNS = [
     "custom_item_desc", "custom_item_price",
     "Status", "File Path", "Signed File Path", "Total Price",
     "Client Phone", "Architect Contact", "Project Special Notes",
+    "שלב עבודה",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
@@ -970,6 +974,16 @@ ALLOWED_PROJECT_STATUSES = [
     "שולם",
 ]
 DEFAULT_PROJECT_STATUS = "ממתין להתחלה"
+
+# שלבי עבודה — לוח קנבן במסך חדר מצב (מוניטור פרויקטים)
+KANBAN_WORK_STAGES = [
+    "התקבל",
+    "במידול",
+    "חומרים ותאורה",
+    "ממתין לפידבק",
+    "רינדור סופי",
+    "נמסר",
+]
 
 # סטטוסים למוניטור צוות תלת-מימד (זרימת עבודה)
 MONITOR_3D_STATUS_OPTIONS = [
@@ -5052,6 +5066,77 @@ def _signed_quote_rows_for_project_hub() -> list[dict]:
     return list(best.values())
 
 
+def _normalized_kanban_stage(val: str) -> str:
+    """מחזיר שלב קנבן תקין; ערך ריק או לא מוכר → 'התקבל'."""
+    v = (val or "").strip()
+    if v in KANBAN_WORK_STAGES:
+        return v
+    return KANBAN_WORK_STAGES[0]
+
+
+def _kanban_work_stage_changed(key: str, client: str, project: str, version: str) -> None:
+    """שמירת שלב עבודה לגיליון quotes לאחר שינוי ב-selectbox בלוח הקנבן."""
+    new_stage = st.session_state.get(key)
+    if new_stage is None:
+        return
+    rows = read_quotes_csv()
+    qk = _quote_key(client, project, version)
+    for i, r in enumerate(rows):
+        if _quote_key(r.get("Client", ""), r.get("Project", ""), r.get("Version", "")) == qk:
+            merged = {c: (r.get(c) or "") for c in QUOTES_CSV_COLUMNS}
+            merged["שלב עבודה"] = new_stage
+            rows[i] = merged
+            write_quotes_csv(rows, skip_rerun=True)
+            st.cache_data.clear()
+            st.rerun()
+            return
+
+
+def _render_project_kanban_board() -> None:
+    """
+    לוח קנבן — פרויקטים פעילים מהצעות (Signed / הומר לפרויקט), עמודת 'שלב עבודה'.
+    העמודה ב-QUOTES_CSV_COLUMNS; ערך ריק בגיליון מוצג כ-'התקבל' (_normalized_kanban_stage).
+    """
+    if not read_quotes_csv():
+        st.info("אין נתוני הצעות ללוח הקנבן.")
+        return
+    active_rows = _signed_quote_rows_for_project_hub()
+    if not active_rows:
+        st.info(
+            "אין פרויקטים פעילים (Signed / הומר לפרויקט) ללוח הקנבן."
+        )
+        return
+
+    st.subheader("לוח שלבי עבודה (קנבן)")
+    by_stage: dict[str, list[tuple[int, dict]]] = {s: [] for s in KANBAN_WORK_STAGES}
+    for idx, row in enumerate(active_rows):
+        stg = _normalized_kanban_stage(row.get("שלב עבודה") or "")
+        by_stage[stg].append((idx, row))
+
+    cols = st.columns(len(KANBAN_WORK_STAGES))
+    for col_idx, stage in enumerate(KANBAN_WORK_STAGES):
+        with cols[col_idx]:
+            st.markdown(f"### {stage}")
+            for idx, row in by_stage[stage]:
+                client = (row.get("Client") or "").strip()
+                project = (row.get("Project") or "").strip()
+                version = (row.get("Version") or "").strip() or "V1"
+                current = _normalized_kanban_stage(row.get("שלב עבודה") or "")
+                key = f"kanban_work_stage_{idx}"
+                with st.container(border=True):
+                    st.markdown(f"**{project}**" if project else "**(ללא שם פרויקט)**")
+                    st.caption(client if client else "—")
+                    st.selectbox(
+                        "שלב עבודה",
+                        KANBAN_WORK_STAGES,
+                        index=KANBAN_WORK_STAGES.index(current),
+                        key=key,
+                        label_visibility="collapsed",
+                        on_change=_kanban_work_stage_changed,
+                        args=(key, client, project, version),
+                    )
+
+
 def _find_project_row_for_hub(client: str, project_name: str) -> dict | None:
     """רשומת projects לפי לקוח ושם פרויקט (התאמה לשדות ב-quotes)."""
     c_key = (client or "").strip()
@@ -6785,11 +6870,12 @@ def main() -> None:
     main_nav = st.sidebar.radio(
         "ניווט ראשי:",
         [
-            "📊 חדר מצב (מוניטור פרויקטים)",
+            NAV_MAIN_PROJECT_ROOM,
             "📁 תיקי פרויקטים (מידע וקשר)",
             "🖥️ מוניטור צוות / משימות",
             "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)",
         ],
+        key="main_nav",
     )
 
     # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
@@ -6797,12 +6883,12 @@ def main() -> None:
     df_projects = pd.DataFrame(projects_rows_debug, columns=PROJECTS_DB_COLUMNS)
     df_projects = df_projects.fillna('')
 
-    if main_nav == "📊 חדר מצב (מוניטור פרויקטים)":
+    if main_nav == NAV_MAIN_PROJECT_ROOM:
         _render_quick_comm_notifications()
         # אזור חדר המצב: מוניטור פרויקטים - כפתורים צידיים + תצוגת טבלאות
         stats = _compute_project_monitor_stats()
         st.sidebar.markdown("---")
-        st.sidebar.markdown("### 📊 מוניטור פרויקטים")
+        st.sidebar.markdown("### סינון לפי סטטוס (מוניטור)")
         active_sum = int(stats.get("active_sum", 0) or 0)
         feedback_sum = int(stats.get("feedback_sum", 0) or 0)
         frozen_sum = int(stats.get("frozen_sum", 0) or 0)
@@ -6832,6 +6918,10 @@ def main() -> None:
         if st.sidebar.button('הצג נתונים גולמיים'):
             st.write(df_projects)
         _render_dropbox_access_token_hint_sidebar()
+
+        st.markdown("---")
+        _render_project_kanban_board()
+        st.markdown("---")
 
         # תצוגת חתך ממוקדת (Drill-down) - במסך הראשי
         if st.session_state.monitor_filter is not None:
