@@ -207,7 +207,7 @@ def _ensure_messages_csv() -> None:
     spreadsheet.worksheet('messages')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def _read_messages_df() -> pd.DataFrame:
     """קריאת הודעות תקשורת מהירה מגוגל שיטס."""
     if spreadsheet is None:
@@ -1619,7 +1619,7 @@ def _ensure_sheet(sheet_name: str, columns: list[str]):
         return worksheet
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def read_contacts_sheet() -> pd.DataFrame:
     """משיכת נתוני אנשי קשר מגיליון contacts ל-DataFrame (כמו quotes / tasks)."""
     if spreadsheet is None:
@@ -1654,7 +1654,7 @@ def save_contacts(df: pd.DataFrame) -> None:
         st.warning(f"שגיאה בשמירת contacts: {e}")
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def read_project_contacts() -> list[dict]:
     """קריאת אנשי קשר לפרויקטים מגיליון project_contacts בגוגל שיטס."""
     if spreadsheet is None:
@@ -1759,19 +1759,36 @@ _LEGACY_PROJECT_STATUS_MAP = {
     "Done": "הסתיים",
 }
 
+# כותרות מאוחדות לקריאה אחת מגיליון projects (חוסך קריאת API כפולה)
+_PROJECTS_SHEET_MERGED_COLUMNS = list(
+    dict.fromkeys(list(PROJECTS_DB_COLUMNS) + list(PROJECTS_CSV_COLUMNS))
+)
 
-@st.cache_data(ttl=120)
+
+@st.cache_data(ttl=600)
+def _read_projects_sheet_merged_df() -> pd.DataFrame:
+    """קריאה אחת לגיליון projects — משותף ל-read_projects ו-read_projects_csv."""
+    if spreadsheet is None:
+        return pd.DataFrame()
+    _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
+    worksheet = spreadsheet.worksheet('projects')
+    df = _read_worksheet_safe(worksheet, _PROJECTS_SHEET_MERGED_COLUMNS)
+    if not df.empty and hasattr(df.columns, 'str'):
+        df.columns = df.columns.str.strip()
+    return df
+
+
 def read_projects() -> list[dict]:
     """קריאת פרויקטים מגיליון projects בגוגל שיטס (מוניטור, Task Board)."""
     if spreadsheet is None:
         err_msg = str(_sheets_init_error) if _sheets_init_error else "אין חיבור לגוגל שיטס"
         st.error(f"שגיאת קריאה: {err_msg}")
         return []
-    _ensure_sheet('projects', PROJECTS_DB_COLUMNS)
     try:
-        worksheet = spreadsheet.worksheet('projects')
-        df = _read_worksheet_safe(worksheet, PROJECTS_DB_COLUMNS)
-        df.columns = df.columns.str.strip()
+        df = _read_projects_sheet_merged_df()
+        if df.empty:
+            return []
+        df = df.reindex(columns=PROJECTS_DB_COLUMNS, fill_value="")
         # ניקוי שורות רפאים - שורות ללא שם פרויקט
         if "Project Name" in df.columns and not df.empty:
             df = df[df["Project Name"].astype(str).str.strip() != ""]
@@ -1818,7 +1835,7 @@ _TASKS_LEGACY_COL_MAP = {
 }
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def read_tasks() -> list[dict]:
     """קריאת משימות מגיליון tasks בגוגל שיטס (Task Board). כולל Retry ו-time.sleep למניעת 429."""
     if spreadsheet is None:
@@ -1875,7 +1892,7 @@ def _ensure_tasks_csv_schema() -> None:
     spreadsheet.worksheet('tasks')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def read_daily_tasks() -> list[dict]:
     """קריאת כל המשימות היומיות מגוגל שיטס (גיליון tasks)."""
     if spreadsheet is None:
@@ -2041,17 +2058,16 @@ def _ensure_projects_csv_schema() -> None:
     spreadsheet.worksheet('projects')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=120)
 def read_projects_csv() -> list[dict]:
-    """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects)."""
+    """קריאת כל הפרויקטים מגוגל שיטס (גיליון projects) — נגזר מ-_read_projects_sheet_merged_df."""
     if spreadsheet is None:
         return []
     _ensure_projects_csv_schema()
     try:
-        worksheet = spreadsheet.worksheet('projects')  # שם גיליון: projects (lowercase)
-        df = _read_worksheet_safe(worksheet, PROJECTS_CSV_COLUMNS)
-        if not df.empty and hasattr(df.columns, 'str'):
-            df.columns = df.columns.str.strip()
+        df = _read_projects_sheet_merged_df()
+        if df.empty:
+            return []
+        df = df.reindex(columns=PROJECTS_CSV_COLUMNS, fill_value="")
         rows = df.to_dict(orient='records')
         statuses_normalized = [s.strip().lower() for s in PROJECTS_CSV_STATUSES]
         for r in rows:
@@ -2198,9 +2214,8 @@ def _quote_csv_to_log_row(r: dict) -> dict:
     }
 
 
-@st.cache_data(ttl=120)
 def read_quotes_log() -> list[dict]:
-    """קריאת הצעות מגיליון quotes בגוגל שיטס - באותה צורה בטוחה כמו projects (fillna, ניקוי רווחים)."""
+    """קריאת הצעות מגיליון quotes — נגזר מ-read_quotes_csv() (מטמון) ללא שכבת מטמון כפולה."""
     rows = read_quotes_csv()
     return [_quote_csv_to_log_row(r) for r in rows]
 
@@ -2266,7 +2281,7 @@ def _ensure_quotes_csv_schema() -> None:
     spreadsheet.worksheet('quotes')  # יקרוס ויציג שגיאה אם הגיליון חסר
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def read_quotes_csv() -> list[dict]:
     """קריאת נתוני טופס הצעות מחיר מגוגל שיטס (גיליון quotes)."""
     if spreadsheet is None:
@@ -2315,7 +2330,7 @@ def write_quotes_csv(rows: list[dict], *, skip_rerun: bool = False) -> None:
         st.warning(f"שגיאה בשמירת quotes: {e}")
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=600)
 def get_quote_from_csv(client: str, project: str, version: str) -> dict | None:
     """Get full quote row from quotes (Google Sheets) by (Client, Project, Version)."""
     key = _quote_key(client, project, version)
@@ -3915,7 +3930,6 @@ def show_quotes_management_page() -> None:
                             log_row=sel,
                         )
                     if ok:
-                        st.cache_data.clear()
                         if dropbox_failed:
                             st.warning(
                                 "תיקיות דרופבוקס לא נוצרו עקב שגיאת התחברות (למשל טוקן פג תוקף). "
@@ -4291,7 +4305,6 @@ def show_quotes_management_page() -> None:
                         if exists_db:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client, project, status="בעבודה")
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
@@ -4322,7 +4335,6 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link,
                                 skip_rerun=True,
                             )
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
@@ -4378,7 +4390,6 @@ def show_quotes_management_page() -> None:
                                     task_deadline=task_deadline,
                                     skip_rerun=True,
                                 )
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client}|{project}"
                             st.session_state["kickoff_success_links"] = (main_link, upload_link, deliverables_link)
@@ -4793,7 +4804,6 @@ def show_quotes_management_page() -> None:
                         if exists_db_fb:
                             # הפרויקט כבר ב-projects – עדכן סטטוס ל'בעבודה' כדי שיופיע במוניטור וב-Task Board
                             _ensure_project_active_in_projects(client_val, project_val, status="בעבודה")
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.success("הסטטוס עודכן ל'בעבודה'. הפרויקט יופיע במוניטור וברשימת המשימות.")
                             st.rerun()
@@ -4823,7 +4833,6 @@ def show_quotes_management_page() -> None:
                                 dropbox_deliverables=deliverables_link_fb,
                                 skip_rerun=True,
                             )
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
@@ -4878,7 +4887,6 @@ def show_quotes_management_page() -> None:
                                     task_deadline=task_deadline_fb,
                                     skip_rerun=True,
                                 )
-                            st.cache_data.clear()
                             time.sleep(1.5)
                             st.session_state["kickoff_success_project"] = f"{client_val}|{project_val}"
                             st.session_state["kickoff_success_links"] = (main_link_fb, upload_link_fb, deliverables_link_fb)
@@ -5505,7 +5513,6 @@ def show_monitor_3d_page() -> None:
 
         if changed:
             write_projects(full_rows, skip_rerun=True)
-            st.cache_data.clear()
             time.sleep(1.5)
             st.success("העדכונים נשמרו בהצלחה! ✅")
             st.rerun()
@@ -5640,7 +5647,6 @@ def show_monitor_3d_page() -> None:
                         r["סטטוס"] = edits_by_key[k]
                     updated_rows.append(r)
                 write_tasks(updated_rows, skip_rerun=True)
-                st.cache_data.clear()
                 st.success("הסטטוס עודכן בהצלחה!")
                 if any_completed:
                     st.balloons()
@@ -5813,7 +5819,6 @@ def _render_edit_existing_task_block() -> None:
             else:
                 updated_del = tasks_df_del.drop(index=row_idx_del).reset_index(drop=True)
                 write_tasks(updated_del.to_dict(orient="records"), skip_rerun=True)
-                st.cache_data.clear()
                 st.success("המשימה נמחקה מהמערכת.")
                 time.sleep(1)
                 st.rerun()
@@ -5849,7 +5854,6 @@ def _render_edit_existing_task_block() -> None:
                 updated["סטטוס"] = new_status
                 full_rows[row_idx] = updated
                 write_tasks(full_rows, skip_rerun=True)
-                st.cache_data.clear()
                 st.success("המשימה עודכנה בגוגל שיטס!")
                 time.sleep(1)
                 st.rerun()
@@ -5910,7 +5914,6 @@ def show_tasks_page() -> None:
             }
             existing.append(row)
             write_tasks(existing, skip_rerun=True)
-            st.cache_data.clear()
             assignee_email = _team_email_for_task_assignee(assignee)
             if assignee_email:
                 cc_list: list[str] = []
@@ -5963,7 +5966,6 @@ def show_tasks_page() -> None:
             if idx_done is not None:
                 tasks_rows_monitor[idx_done] = {**tasks_rows_monitor[idx_done], "סטטוס": "הסתיים"}
             write_tasks(tasks_rows_monitor, skip_rerun=True)
-            st.cache_data.clear()  # Ensure monitor pulls fresh data from Google Sheets
             st.rerun()
 
         vf_mon = (st.session_state.get("view_filter") or "").strip()
@@ -6177,7 +6179,6 @@ def show_tasks_page() -> None:
                                 full_rows[i] = edited_by_key[k]
                         updated = full_rows
                     write_tasks(updated, skip_rerun=True)
-                    st.cache_data.clear()
                     st.success("השינויים נשמרו בהצלחה!")
                     time.sleep(1)
                     st.rerun()
@@ -6195,7 +6196,6 @@ def show_tasks_page() -> None:
                         to_remove_keys = {_del_key(r) for _, r in to_delete.iterrows()}
                         updated_rows = [r for r in tasks_rows if _del_key(r) not in to_remove_keys]
                         write_tasks(updated_rows, skip_rerun=True)
-                        st.cache_data.clear()
                         st.success("המשימות נמחקו בהצלחה!")
                         time.sleep(1)
                         st.rerun()
@@ -7090,9 +7090,9 @@ def main() -> None:
         view_filter = (st.session_state.get("current_user") or "").strip()
     st.session_state["view_filter"] = view_filter
 
-    if st.sidebar.button("🔄 רענן נתונים", key="refresh_data_btn", use_container_width=True):
-        st.cache_data.clear()  # ניקוי cache כדי לטעון נתונים עדכניים מגוגל שיטס
-        st.rerun()
+    st.sidebar.caption(
+        "נתוני גוגל שיטס נטענים ממטמון עד 10 דקות; לאחר כל שמירה במערכת המטמון מתעדכן אוטומטית."
+    )
 
     menu_options = [
         NAV_MAIN_PROJECT_ROOM,
