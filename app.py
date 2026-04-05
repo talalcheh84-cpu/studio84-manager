@@ -724,13 +724,26 @@ def _task_team_key_for_color(task_assignee: str) -> str:
     return (task_assignee or "").strip() or "(ללא אחראי)"
 
 
-def _is_out_of_office_task(row_or_name: dict | str) -> bool:
+def _is_out_of_office_task(row_or_name) -> bool:
     """משימת חופשה/היעדרות — לפי שם המשימה (סוג המשימה שנשמר בשם)."""
     if isinstance(row_or_name, dict):
         name = (row_or_name.get("שם משימה") or "").strip()
+    elif hasattr(row_or_name, "get") and not isinstance(row_or_name, (str, bytes)):
+        name = str(row_or_name.get("שם משימה", "") or "").strip()
     else:
         name = str(row_or_name or "").strip()
     return name == TASK_TYPE_OOO
+
+
+def _ooo_event_title_from_row(row) -> str:
+    """כותרת תצוגה לחופשה בלוח שנה ובגאנט — לפי איש צוות (עמודת הוקצה ל)."""
+    assignee_raw = str(row.get("הוקצה ל", "") or "").strip() if hasattr(row, "get") else ""
+    team_key = _task_team_key_for_color(assignee_raw)
+    if team_key and team_key != "(ללא אחראי)":
+        return f"🌴 חופשה: {team_key}"
+    if assignee_raw:
+        return f"🌴 חופשה: {assignee_raw}"
+    return "🌴 חופשה/היעדרות"
 
 
 def _gantt_opacity_for_status(status_val) -> float:
@@ -5066,8 +5079,10 @@ def _build_gantt_dataframe_for_timeline(
     acol = "הוקצה ל" if "הוקצה ל" in gantt_df.columns else None
     if acol:
         gantt_df[acol] = gantt_df[acol].fillna("").astype(str).replace("nan", "")
-        gantt_df["_task_color_key"] = gantt_df[acol].apply(_task_team_key_for_color)
+        gantt_df["_assignee_color_key"] = gantt_df[acol].apply(_task_team_key_for_color)
+        gantt_df["_task_color_key"] = gantt_df["_assignee_color_key"]
     else:
+        gantt_df["_assignee_color_key"] = "(ללא אחראי)"
         gantt_df["_task_color_key"] = "(ללא אחראי)"
 
     if "שם משימה" in gantt_df.columns:
@@ -5080,17 +5095,38 @@ def _build_gantt_dataframe_for_timeline(
         gantt_df["_opacity"] = 1.0
 
     if y_axis_mode == "assignee":
-        gantt_df["_y_gantt"] = gantt_df["_task_color_key"]
+        gantt_df["_y_gantt"] = gantt_df["_assignee_color_key"]
     elif y_axis_mode == "project":
-        _proj = gantt_df.get("פרויקט", pd.Series([""] * len(gantt_df))).fillna("").astype(str).str.strip()
-        gantt_df["_y_gantt"] = _proj.mask(_proj.eq(""), "(ללא פרויקט)")
+
+        def _proj_y(row) -> str:
+            if _is_out_of_office_task(row):
+                return _ooo_event_title_from_row(row)
+            _p = str(row.get("פרויקט", "") or "").strip()
+            return _p if _p else "(ללא פרויקט)"
+
+        gantt_df["_y_gantt"] = gantt_df.apply(_proj_y, axis=1)
     else:
         if "פרויקט" in gantt_df.columns and "שם משימה" in gantt_df.columns:
-            gantt_df["_y_gantt"] = (
-                gantt_df["פרויקט"].fillna("") + " | " + gantt_df["שם משימה"].fillna("")
-            ).str.strip(" |")
+
+            def _task_detail_y(row) -> str:
+                if _is_out_of_office_task(row):
+                    return _ooo_event_title_from_row(row)
+                return (
+                    str(row.get("פרויקט", "") or "") + " | " + str(row.get("שם משימה", "") or "")
+                ).strip(" |")
+
+            gantt_df["_y_gantt"] = gantt_df.apply(_task_detail_y, axis=1)
         else:
             gantt_df["_y_gantt"] = gantt_df.get("שם משימה", pd.Series([""] * len(gantt_df))).fillna("")
+
+    gantt_df["_gantt_bar_text"] = gantt_df.apply(
+        lambda r: (
+            _ooo_event_title_from_row(r)
+            if _is_out_of_office_task(r)
+            else str(r.get("_assignee_color_key", "") or "")
+        ),
+        axis=1,
+    )
 
     return gantt_df, "_y_gantt", None
 
@@ -5504,7 +5540,7 @@ def show_monitor_3d_page() -> None:
                 y=y_col,
                 color="_task_color_key",
                 color_discrete_map=_gantt_color_map,
-                text="_task_color_key",
+                text="_gantt_bar_text",
                 title="תרשים גאנט - משימות (פעילות והסתיים בבהירות נמוכה)",
             )
             fig.update_yaxes(autorange="reversed")  # משימות חדשות בראש
@@ -6250,7 +6286,7 @@ def show_tasks_page() -> None:
                     y=y_wl,
                     color="_task_color_key",
                     color_discrete_map=_cm_wl,
-                    text="_task_color_key",
+                    text="_gantt_bar_text",
                     title="תרשים גאנט — עומסי עבודה (תאריך התחלה עד תאריך יעד)",
                 )
                 fig_wl.update_yaxes(autorange="reversed")
@@ -6322,12 +6358,16 @@ def show_tasks_page() -> None:
                     project = str(row.get("פרויקט", "") or "").strip()
                     _cal_color = (
                         CALENDAR_TASK_COLOR_OOO
-                        if _is_out_of_office_task(task_name)
+                        if _is_out_of_office_task(row)
                         else CALENDAR_TASK_COLOR_DEFAULT
                     )
+                    if _is_out_of_office_task(row):
+                        _ev_title = _ooo_event_title_from_row(row)
+                    else:
+                        _ev_title = f"{task_name} - {project}" if project else task_name or "משימה"
 
                     calendar_events.append({
-                        "title": f"{task_name} - {project}" if project else task_name or "משימה",
+                        "title": _ev_title,
                         "start": start_str,
                         "end": end_str,
                         "color": _cal_color,
