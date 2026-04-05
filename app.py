@@ -668,8 +668,14 @@ TEAM_EMAILS = {
 }
 MANAGEMENT_USERS = frozenset({"טל", "ערן"})
 
-# ניווט ראשי (מנהלים) — תווית יחידה לרשימת ה-radio ול-branch של if main_nav
-NAV_MAIN_PROJECT_ROOM = "📊 חדר מצב (מוניטור פרויקטים)"
+# ניווט ראשי — תוויות יחידות לרשימת ה-radio ול-branch של if/elif
+NAV_MAIN_PROJECT_ROOM = "📊 חדר מצב (קנבן)"
+NAV_MY_TASKS = "🖥️ המשימות שלי (מוניטור צוות)"
+NAV_PROJECT_FOLDERS = "📁 תיקי פרויקטים (מידע וקשר)"
+NAV_MGMT_SEPARATOR = "--- אזור ניהול ---"
+NAV_QUOTES_FINANCE = "📝 הצעות מחיר ופיננסים"
+NAV_TASKS_PRODUCTION = "🎯 הפקת פרויקטים והקצאת משימות"
+NAV_CRM = "📞 לקוחות ואנשי קשר"
 
 # מיפוי שם משתמש ממסך ההתחברות (אנגלית, lower) → שם קנוני ב-TEAM_EMAILS / משימות.
 # לאחר הסרת בורר הזהות בסיידבר, current_user נקבע רק בכניסה — יש להרחיב כאן לפי שמות ב-secrets.
@@ -7065,47 +7071,38 @@ def main() -> None:
         st.cache_data.clear()  # ניקוי cache כדי לטעון נתונים עדכניים מגוגל שיטס
         st.rerun()
 
-    if not is_management:
-        # צוות — מוניטור משימות + תיקי פרויקטים (ללא הצעות/לקוחות/חדר מצב)
-        _render_quick_comm_sidebar_form()
-        _render_quick_comm_notifications()
-        team_main_nav = st.sidebar.radio(
-            "ניווט ראשי:",
+    menu_options = [
+        NAV_MAIN_PROJECT_ROOM,
+        NAV_MY_TASKS,
+        NAV_PROJECT_FOLDERS,
+    ]
+    if is_management:
+        menu_options.extend(
             [
-                "🖥️ מוניטור צוות / משימות",
-                "📁 תיקי פרויקטים (מידע וקשר)",
-            ],
-            key="team_main_nav",
+                NAV_MGMT_SEPARATOR,
+                NAV_QUOTES_FINANCE,
+                NAV_TASKS_PRODUCTION,
+                NAV_CRM,
+            ]
         )
-        if team_main_nav == "📁 תיקי פרויקטים (מידע וקשר)":
-            show_project_folders_page()
-        else:
-            show_monitor_3d_page()
-        st.sidebar.markdown("---")
-        if st.sidebar.button("התנתק 🚪", key="logout_btn", use_container_width=True):
-            for k in ("logged_in", "username", "role", "current_user", "is_management", "sidebar_current_user"):
-                st.session_state.pop(k, None)
-            st.rerun()
-        return
 
-    # טל / ערן — ניווט מלא: חדר מצב, מוניטור משימות, ניהול שוטף
-    main_nav = st.sidebar.radio(
-        "ניווט ראשי:",
-        [
-            NAV_MAIN_PROJECT_ROOM,
-            "📁 תיקי פרויקטים (מידע וקשר)",
-            "🖥️ מוניטור צוות / משימות",
-            "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)",
-        ],
-        key="main_nav",
+    selected_page = st.sidebar.radio(
+        "ניווט ראשי",
+        menu_options,
+        key="nav_main_primary",
     )
+    if selected_page == NAV_MGMT_SEPARATOR:
+        st.warning("אנא בחר באחת מהאפשרויות מתחת לאזור הניהול.")
+        selected_page = st.session_state.get("last_valid_main_nav", menu_options[0])
+    else:
+        st.session_state["last_valid_main_nav"] = selected_page
 
     # טעינת נתוני פרויקטים לדיבאג (מצב 'רנטגן')
     projects_rows_debug = read_projects()
     df_projects = pd.DataFrame(projects_rows_debug, columns=PROJECTS_DB_COLUMNS)
-    df_projects = df_projects.fillna('')
+    df_projects = df_projects.fillna("")
 
-    if main_nav == NAV_MAIN_PROJECT_ROOM:
+    if selected_page == NAV_MAIN_PROJECT_ROOM:
         _render_quick_comm_notifications()
         # אזור חדר המצב: מוניטור פרויקטים - כפתורים צידיים + תצוגת טבלאות
         stats = _compute_project_monitor_stats()
@@ -7237,46 +7234,51 @@ def main() -> None:
             st.session_state.monitor_title = ""
             st.rerun()
 
-    elif main_nav == "📁 תיקי פרויקטים (מידע וקשר)":
+    elif selected_page == NAV_PROJECT_FOLDERS:
         _render_quick_comm_notifications()
         _render_quick_comm_sidebar_form()
         _render_dropbox_access_token_hint_sidebar()
         show_project_folders_page()
 
-    elif main_nav == "🖥️ מוניטור צוות / משימות":
+    elif selected_page == NAV_MY_TASKS:
         _render_quick_comm_notifications()
         _render_quick_comm_sidebar_form()
         _render_dropbox_access_token_hint_sidebar()
         show_monitor_3d_page()
 
-    elif main_nav == "⚙️ ניהול שוטף (הצעות, משימות, לקוחות)":
+    elif selected_page == NAV_QUOTES_FINANCE:
         _render_quick_comm_notifications()
-        # אזור הניהול השוטף: תפריט 'בחר פעולה' + כל המסכים המשויכים
-        page = st.sidebar.radio(
-            "בחר פעולה",
-            (
-                "יצירת הצעה חדשה",
-                "ניהול הצעות",
-                "ניהול פרויקטים ומשימות",
-                "👥 לקוחות ואנשי קשר",
-            ),
-            index=0,
-        )
         _render_quick_comm_sidebar_form()
-        if st.sidebar.button('הצג נתונים גולמיים'):
+        if st.sidebar.button("הצג נתונים גולמיים"):
             st.write(df_projects)
         _render_dropbox_access_token_hint_sidebar()
-
-        if page == "יצירת הצעה חדשה":
+        quotes_mode = st.radio(
+            "הצעות מחיר",
+            ["יצירת הצעה חדשה", "ניהול הצעות"],
+            horizontal=True,
+            key="quotes_mode_inline",
+        )
+        if quotes_mode == "יצירת הצעה חדשה":
             show_quote_page()
-        elif page == "ניהול הצעות":
-            show_quotes_management_page()
-        elif page == "👥 לקוחות ואנשי קשר":
-            show_contacts_page()
         else:
-            show_tasks_page()
+            show_quotes_management_page()
 
-    # כפתור התנתקות בתחתית תפריט הצד (למנהל)
+    elif selected_page == NAV_TASKS_PRODUCTION:
+        _render_quick_comm_notifications()
+        _render_quick_comm_sidebar_form()
+        if st.sidebar.button("הצג נתונים גולמיים"):
+            st.write(df_projects)
+        _render_dropbox_access_token_hint_sidebar()
+        show_tasks_page()
+
+    elif selected_page == NAV_CRM:
+        _render_quick_comm_notifications()
+        _render_quick_comm_sidebar_form()
+        if st.sidebar.button("הצג נתונים גולמיים"):
+            st.write(df_projects)
+        _render_dropbox_access_token_hint_sidebar()
+        show_contacts_page()
+
     st.sidebar.markdown("---")
     if st.sidebar.button("התנתק 🚪", key="logout_btn_manager", use_container_width=True):
         for k in ("logged_in", "username", "role", "current_user", "is_management", "sidebar_current_user"):
