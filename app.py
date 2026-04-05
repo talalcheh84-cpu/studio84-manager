@@ -3922,11 +3922,14 @@ TRANSACTION_INVOICE_VAT_RATE = 0.17
 
 # פרטי חברה ב-PDF חשבון עסקה (סטודיו 84)
 STUDIO_INVOICE_COMPANY_NAME = 'סטודיו 84 בע"מ'
-STUDIO_INVOICE_COMPANY_ID = "515286241"
-STUDIO_INVOICE_ADDRESS = "הרצל 158, תל אביב"
-STUDIO_INVOICE_PHONE = "054-4416341"
-STUDIO_INVOICE_EMAIL = "office@studio84.co.il"
-STUDIO_INVOICE_BANK_LINE = "בנק לאומי (10), סניף 806, חשבון 111111/11"
+STUDIO_INVOICE_COMPANY_ID = "513888750"
+STUDIO_INVOICE_ADDRESS = "Eliezer Kaplan 2 St., Tel-Aviv, Israel"
+STUDIO_INVOICE_PHONE = "03-5669107"
+STUDIO_INVOICE_EMAIL = "eran@studio84.co.il"
+# שורת תחתית ברירת מחדל ב-PDF (חשבון לתשלום)
+STUDIO_INVOICE_PAYMENT_FOOTER_LINE = (
+    'פרטי חברה וחשבון לתשלום: סטודיו 84 בע"מ | בנק הפועלים (12) | חשבון: 448977'
+)
 
 
 def _resolve_hebrew_ttf_font_pair() -> tuple[Path | None, Path | None]:
@@ -3996,10 +3999,7 @@ def _studio_transaction_invoice_footer_text() -> str:
             return ft.strip()
     except Exception:
         pass
-    return (
-        f'{STUDIO_INVOICE_COMPANY_NAME} | ח.פ {STUDIO_INVOICE_COMPANY_ID} | {STUDIO_INVOICE_ADDRESS} | '
-        f"{STUDIO_INVOICE_PHONE} | {STUDIO_INVOICE_EMAIL} | {STUDIO_INVOICE_BANK_LINE}"
-    )
+    return STUDIO_INVOICE_PAYMENT_FOOTER_LINE
 
 
 def _transaction_invoice_draw_footer(pdf: FPDF, footer_text: str, left_m: float, page_w: float) -> None:
@@ -4047,25 +4047,25 @@ def build_transaction_invoice_pdf_bytes(
     pdf.add_font("Hebrew", "B", str(font_bold))
 
     logo_path = _resolve_studio_logo_path()
-    logo_bottom = 10.0
+    logo_bottom = 8.0
     logo_drawn = False
-    if logo_path:
-        try:
-            img_info = pdf.image(str(logo_path), x=10, y=10, w=45)
+    try:
+        if logo_path:
+            img_info = pdf.image(str(logo_path), x=10, y=8, w=40)
             if hasattr(img_info, "rendered_height"):
                 h_mm = float(img_info.rendered_height)
             elif isinstance(img_info, (int, float)):
                 h_mm = float(img_info)
             else:
-                h_mm = 18.0
-            logo_bottom = 10.0 + h_mm
+                h_mm = 16.0
+            logo_bottom = 8.0 + h_mm
             logo_drawn = True
-        except Exception:
-            logo_drawn = False
-            logo_bottom = 10.0
+    except Exception:
+        logo_drawn = False
+        logo_bottom = 8.0
 
     if not logo_drawn:
-        pdf.set_xy(10, 10)
+        pdf.set_xy(10, 8)
         pdf.set_font("Hebrew", "B", 14)
         pdf.cell(45, 8, _pdf_bidi_text("Studio 84"), align="L")
 
@@ -4076,7 +4076,13 @@ def build_transaction_invoice_pdf_bytes(
     pdf.cell(company_w, 5, _pdf_bidi_text(STUDIO_INVOICE_COMPANY_NAME), align="R", ln=1)
     pdf.set_x(company_x)
     pdf.set_font("Hebrew", "", 9)
-    pdf.cell(company_w, 5, _pdf_bidi_text(f"ח.פ {STUDIO_INVOICE_COMPANY_ID}"), align="R", ln=1)
+    pdf.cell(
+        company_w,
+        5,
+        _pdf_bidi_text(f'עוסק מורשה (ח.פ): {STUDIO_INVOICE_COMPANY_ID}'),
+        align="R",
+        ln=1,
+    )
     pdf.set_x(company_x)
     pdf.cell(company_w, 5, _pdf_bidi_text(STUDIO_INVOICE_ADDRESS), align="R", ln=1)
     pdf.set_x(company_x)
