@@ -7,3 +7,6 @@ oauth2client
 dropbox
 docxtpl
 plotly
+fpdf2
+python-bidi
+fpdf2
