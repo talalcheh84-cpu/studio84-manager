@@ -5525,9 +5525,6 @@ def _render_edit_existing_task_block() -> None:
 
 def show_tasks_page() -> None:
     st.title("ניהול פרויקטים ומשימות")
-    _render_edit_existing_task_block()
-    st.divider()
-
     sub_nav = st.radio(
         "בחר תצוגה:",
         ["הקצאת משימה חדשה 🎯", "מוניטור צוות (עדכון סטטוסים) 📋", "לוח עומסים (גאנט ויומן) 📊"],
@@ -5598,8 +5595,11 @@ def show_tasks_page() -> None:
                 time.sleep(1)
                 st.rerun()
 
-    elif sub_nav == "מוניטור צוות (עדכון סטטוסים) 📋":
-        # --- מוניטור סטודיו - תמונת מצב צוותית (לפני טופס הוספת משימה) ---
+    _render_edit_existing_task_block()
+    st.divider()
+
+    if sub_nav == "מוניטור צוות (עדכון סטטוסים) 📋":
+        # --- מוניטור סטודיו - תמונת מצב צוותית ---
         st.subheader("🎯 מוניטור סטודיו - תמונת מצב צוותית")
 
         # נתונים מ-read_tasks() (גיליון tasks בגוגל שיטס) — לא רשימה זמנית אחרת
