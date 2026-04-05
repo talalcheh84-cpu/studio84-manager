@@ -986,6 +986,8 @@ QUOTES_LOG_COLUMNS = [
     "מקדמה שולמה",
     "סכום מקדמה",
     "גמר חשבון שולם",
+    "freelancer_cost",
+    "misc_expenses",
 ]
 
 # Full quote form data for edit/pre-fill (quotes tab in Google Sheets)
@@ -1008,6 +1010,8 @@ QUOTES_CSV_COLUMNS = [
     "מקדמה שולמה",
     "סכום מקדמה",
     "גמר חשבון שולם",
+    "freelancer_cost",
+    "misc_expenses",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
@@ -2252,6 +2256,8 @@ def _quote_csv_to_log_row(r: dict) -> dict:
         "מקדמה שולמה": _normalize_payment_cell(r.get("מקדמה שולמה")),
         "סכום מקדמה": _format_advance_amount_storage(r.get("סכום מקדמה")),
         "גמר חשבון שולם": _normalize_payment_cell(r.get("גמר חשבון שולם")),
+        "freelancer_cost": (r.get("freelancer_cost") or "").strip(),
+        "misc_expenses": (r.get("misc_expenses") or "").strip(),
     }
 
 
@@ -2283,6 +2289,12 @@ def write_quotes_log(rows: list[dict]) -> None:
                 log_row.get("סכום מקדמה", q.get("סכום מקדמה"))
             )
             q["גמר חשבון שולם"] = _normalize_payment_cell(log_row.get("גמר חשבון שולם", q.get("גמר חשבון שולם")))
+            q["freelancer_cost"] = _format_advance_amount_storage(
+                log_row.get("freelancer_cost", q.get("freelancer_cost"))
+            )
+            q["misc_expenses"] = _format_advance_amount_storage(
+                log_row.get("misc_expenses", q.get("misc_expenses"))
+            )
     # Remove quotes that were deleted (in rows we have the current set - if a quote is in current but not in rows, it was deleted)
     keys_in_rows = {(r.get("Date"), r.get("Client"), r.get("Project"), r.get("Version")) for r in rows}
     current = [q for q in current if (q.get("Date"), q.get("Client"), q.get("Project"), q.get("Version")) in keys_in_rows]
@@ -2349,6 +2361,8 @@ def read_quotes_csv() -> list[dict]:
             for pay_col in ("מקדמה שולמה", "גמר חשבון שולם"):
                 normalized[pay_col] = _normalize_payment_cell(normalized.get(pay_col))
             normalized["סכום מקדמה"] = _format_advance_amount_storage(normalized.get("סכום מקדמה"))
+            normalized["freelancer_cost"] = _format_advance_amount_storage(normalized.get("freelancer_cost"))
+            normalized["misc_expenses"] = _format_advance_amount_storage(normalized.get("misc_expenses"))
             result.append(normalized)
         return result
     except Exception as e:
@@ -3585,6 +3599,8 @@ def show_quote_page() -> None:
             merged_csv["מקדמה שולמה"] = _normalize_payment_cell(merged_csv.get("מקדמה שולמה"))
             merged_csv["סכום מקדמה"] = _format_advance_amount_storage(merged_csv.get("סכום מקדמה"))
             merged_csv["גמר חשבון שולם"] = _normalize_payment_cell(merged_csv.get("גמר חשבון שולם"))
+            merged_csv["freelancer_cost"] = _format_advance_amount_storage(merged_csv.get("freelancer_cost"))
+            merged_csv["misc_expenses"] = _format_advance_amount_storage(merged_csv.get("misc_expenses"))
             quote_csv_row = merged_csv
             if is_edit_mode and orig_client is not None and orig_project is not None and orig_version:
                 if not update_quote_in_csv(orig_client, orig_project, orig_version, quote_csv_row):
@@ -3950,10 +3966,14 @@ def _show_finance_collection_dashboard() -> None:
     totals: list[float] = []
     collected_full_final: list[float] = []
     total_received_parts: list[float] = []
+    total_expected_gross = 0.0
     for _, row in deduped.iterrows():
         rdict = row.to_dict()
         price = _extract_total_from_quote_row(rdict)
         adv = min(_parse_currency_amount(rdict.get("סכום מקדמה")), price)
+        fc_g = _parse_currency_amount(rdict.get("freelancer_cost"))
+        me_g = _parse_currency_amount(rdict.get("misc_expenses"))
+        total_expected_gross += price - (fc_g + me_g)
         totals.append(price)
         if _payment_marked_yes(rdict.get("גמר חשבון שולם")):
             collected_full_final.append(price)
@@ -3967,10 +3987,11 @@ def _show_finance_collection_dashboard() -> None:
     total_received = sum(total_received_parts)
     open_balance = total_volume - total_received
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("סך היקף עסקאות (פעילים, לפי גרסה אחרונה)", f"₪{total_volume:,.0f}")
     c2.metric("סך שנגבה במלואו (גמר חשבון שולם)", f"₪{total_collected_full:,.0f}")
     c3.metric("יתרת חוב פתוחה / צפי הכנסה", f"₪{open_balance:,.0f}")
+    c4.metric("סך הרווח הגולמי הצפוי (פרויקטים פעילים)", f"₪{total_expected_gross:,.0f}")
 
     st.markdown("##### טבלת מעקב גבייה")
     table_rows = []
@@ -3983,6 +4004,9 @@ def _show_finance_collection_dashboard() -> None:
         if not st_proj:
             st_proj = str(row.get("Status") or "").strip()
         adv_amt = min(_parse_currency_amount(row.get("סכום מקדמה")), price)
+        fc = _parse_currency_amount(rdict.get("freelancer_cost"))
+        me = _parse_currency_amount(rdict.get("misc_expenses"))
+        gross = price - (fc + me)
         table_rows.append(
             {
                 "שם פרויקט": project,
@@ -3990,6 +4014,9 @@ def _show_finance_collection_dashboard() -> None:
                 "סטטוס": st_proj,
                 "שלב בקנבן": _normalized_kanban_stage(str(row.get("שלב עבודה") or "")),
                 "מחיר בהצעה": price,
+                "freelancer_cost": fc,
+                "misc_expenses": me,
+                "רווח גולמי": gross,
                 "מקדמה שולמה": _normalize_payment_cell(row.get("מקדמה שולמה")),
                 "סכום מקדמה": adv_amt,
                 "גמר חשבון שולם": _normalize_payment_cell(row.get("גמר חשבון שולם")),
@@ -4002,6 +4029,13 @@ def _show_finance_collection_dashboard() -> None:
         hide_index=True,
         column_config={
             "מחיר בהצעה": st.column_config.NumberColumn("מחיר בהצעה (₪)", format="%.0f"),
+            "freelancer_cost": st.column_config.NumberColumn(
+                "עלות קבלני משנה / פרילנסרים (₪)", format="%.0f"
+            ),
+            "misc_expenses": st.column_config.NumberColumn(
+                "הוצאות פרויקט נוספות (₪)", format="%.0f"
+            ),
+            "רווח גולמי": st.column_config.NumberColumn("רווח גולמי (₪)", format="%.0f"),
             "סכום מקדמה": st.column_config.NumberColumn("סכום מקדמה (₪)", format="%.0f"),
         },
     )
@@ -4024,6 +4058,8 @@ def _show_finance_collection_dashboard() -> None:
     adv_default = _payment_marked_yes(r0.get("מקדמה שולמה"))
     adv_amt_default = _parse_currency_amount(r0.get("סכום מקדמה"))
     final_default = _payment_marked_yes(r0.get("גמר חשבון שולם"))
+    freelancer_default = _parse_currency_amount(r0.get("freelancer_cost"))
+    misc_default = _parse_currency_amount(r0.get("misc_expenses"))
 
     adv1, adv2, cb_final = st.columns([1, 1, 1])
     with adv1:
@@ -4048,6 +4084,26 @@ def _show_finance_collection_dashboard() -> None:
             key=f"finance_pay_final_{selected_ix}",
         )
 
+    ex1, ex2 = st.columns(2)
+    with ex1:
+        freelancer_cost_in = st.number_input(
+            "עלות קבלני משנה / פרילנסרים (₪)",
+            min_value=0.0,
+            value=float(freelancer_default),
+            step=100.0,
+            format="%.0f",
+            key=f"finance_pay_freelancer_{selected_ix}",
+        )
+    with ex2:
+        misc_expenses_in = st.number_input(
+            "הוצאות פרויקט נוספות — מודלים, פלאגינים וכו׳ (₪)",
+            min_value=0.0,
+            value=float(misc_default),
+            step=100.0,
+            format="%.0f",
+            key=f"finance_pay_misc_{selected_ix}",
+        )
+
     if st.button("💾 עדכן סטטוס תשלום", key="finance_pay_save", type="primary"):
         date_v = str(r0.get("Date") or "").strip()
         client_v = str(r0.get("Client") or "").strip()
@@ -4068,6 +4124,8 @@ def _show_finance_collection_dashboard() -> None:
             merged["סכום מקדמה"] = _format_advance_amount_storage(adv_amt_in)
             merged["מקדמה שולמה"] = "כן" if (adv_ok or adv_amt_in > 0) else "לא"
             merged["גמר חשבון שולם"] = "כן" if final_ok else "לא"
+            merged["freelancer_cost"] = _format_advance_amount_storage(freelancer_cost_in)
+            merged["misc_expenses"] = _format_advance_amount_storage(misc_expenses_in)
             all_rows[i] = merged
             updated = True
             break
