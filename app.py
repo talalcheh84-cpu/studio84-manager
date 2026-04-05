@@ -983,6 +983,8 @@ QUOTES_LOG_COLUMNS = [
     "Signed File Path",
     "Custom Item Desc",
     "Custom Item Price",
+    "מקדמה שולמה",
+    "גמר חשבון שולם",
 ]
 
 # Full quote form data for edit/pre-fill (quotes tab in Google Sheets)
@@ -1002,6 +1004,8 @@ QUOTES_CSV_COLUMNS = [
     "Status", "File Path", "Signed File Path", "Total Price",
     "Client Phone", "Architect Contact", "Project Special Notes",
     "שלב עבודה",
+    "מקדמה שולמה",
+    "גמר חשבון שולם",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
@@ -1697,6 +1701,19 @@ def format_number(value: float) -> str:
     return f"{as_int:,.0f}"
 
 
+def _payment_marked_yes(val) -> bool:
+    """כן / True / yes — נחשב כחיובי לשדות גבייה."""
+    if val is True:
+        return True
+    s = str(val or "").strip().lower()
+    return s in ("כן", "yes", "true", "1")
+
+
+def _normalize_payment_cell(val) -> str:
+    """ערך אחיד לגיליון: 'כן' או 'לא'."""
+    return "כן" if _payment_marked_yes(val) else "לא"
+
+
 def _extract_total_from_quote_row(row: dict) -> float:
     """Extract total amount from a quote row. Tries: Total Price, סה"כ, Total, מחיר סופי, היקף כספי."""
     AMOUNT_COLS = ["Total Price", 'סה"כ', "Total", "מחיר סופי", "היקף כספי"]
@@ -2211,6 +2228,8 @@ def _quote_csv_to_log_row(r: dict) -> dict:
         "Signed File Path": (r.get("Signed File Path") or "").strip(),
         "Custom Item Desc": (r.get("custom_item_desc") or r.get("Custom Item Desc") or "").strip(),
         "Custom Item Price": (r.get("custom_item_price") or r.get("Custom Item Price") or "").strip(),
+        "מקדמה שולמה": _normalize_payment_cell(r.get("מקדמה שולמה")),
+        "גמר חשבון שולם": _normalize_payment_cell(r.get("גמר חשבון שולם")),
     }
 
 
@@ -2237,6 +2256,8 @@ def write_quotes_log(rows: list[dict]) -> None:
             q["Total Price"] = (log_row.get("Total Price") or "").strip()
             q["custom_item_desc"] = (log_row.get("Custom Item Desc") or "").strip()
             q["custom_item_price"] = (log_row.get("Custom Item Price") or "").strip()
+            q["מקדמה שולמה"] = _normalize_payment_cell(log_row.get("מקדמה שולמה", q.get("מקדמה שולמה")))
+            q["גמר חשבון שולם"] = _normalize_payment_cell(log_row.get("גמר חשבון שולם", q.get("גמר חשבון שולם")))
     # Remove quotes that were deleted (in rows we have the current set - if a quote is in current but not in rows, it was deleted)
     keys_in_rows = {(r.get("Date"), r.get("Client"), r.get("Project"), r.get("Version")) for r in rows}
     current = [q for q in current if (q.get("Date"), q.get("Client"), q.get("Project"), q.get("Version")) in keys_in_rows]
@@ -2300,6 +2321,8 @@ def read_quotes_csv() -> list[dict]:
                 else:
                     s = str(v).strip()
                     normalized[c] = "" if s.lower() in ("nan", "none") else s
+            for pay_col in ("מקדמה שולמה", "גמר חשבון שולם"):
+                normalized[pay_col] = _normalize_payment_cell(normalized.get(pay_col))
             result.append(normalized)
         return result
     except Exception as e:
@@ -2739,6 +2762,8 @@ def _show_import_past_quote_form() -> None:
                     "Status": "Signed",
                     "File Path": "",
                     "Signed File Path": str(target_path.resolve()),
+                    "מקדמה שולמה": "לא",
+                    "גמר חשבון שולם": "לא",
                 })
                 append_quote_to_csv(new_row)
 
@@ -3524,6 +3549,15 @@ def show_quote_page() -> None:
                 "Signed File Path": "",
                 "Total Price": f"{total_inc_vat:.2f}",
             }
+            merged_csv = {c: "" for c in QUOTES_CSV_COLUMNS}
+            if is_edit_mode and edit_quote_row:
+                prev_full = get_quote_from_csv_by_log_row(edit_quote_row)
+                if prev_full:
+                    merged_csv = {c: (prev_full.get(c) or "") for c in QUOTES_CSV_COLUMNS}
+            merged_csv.update(quote_csv_row)
+            merged_csv["מקדמה שולמה"] = _normalize_payment_cell(merged_csv.get("מקדמה שולמה"))
+            merged_csv["גמר חשבון שולם"] = _normalize_payment_cell(merged_csv.get("גמר חשבון שולם"))
+            quote_csv_row = merged_csv
             if is_edit_mode and orig_client is not None and orig_project is not None and orig_version:
                 if not update_quote_in_csv(orig_client, orig_project, orig_version, quote_csv_row):
                     append_quote_to_csv(quote_csv_row)
@@ -3827,6 +3861,169 @@ def show_quote_page() -> None:
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
+
+
+FINANCE_QUOTE_CANCELLED_STATUSES = frozenset({"Rejected"})
+
+
+def _finance_dedupe_quotes_df(quotes_df: pd.DataFrame) -> pd.DataFrame:
+    """שורה אחת לכל (Client, Project) — הגרסה הגבוהה ביותר; רק הצעות שאינן מבוטלות."""
+    if quotes_df.empty or "Status" not in quotes_df.columns:
+        return quotes_df.iloc[0:0].copy()
+    st_col = quotes_df["Status"].fillna("").astype(str).str.strip()
+    active = quotes_df[~st_col.isin(FINANCE_QUOTE_CANCELLED_STATUSES)].copy()
+    if active.empty:
+        return active
+    best_idx: dict[tuple[str, str], int] = {}
+    best_ver: dict[tuple[str, str], int] = {}
+    for i in active.index:
+        row = active.loc[i]
+        c = str(row.get("Client") or "").strip()
+        p = str(row.get("Project") or "").strip()
+        if not p:
+            continue
+        key = (c, p)
+        pv = parse_version_number(str(row.get("Version") or ""))
+        if key not in best_ver or pv > best_ver[key]:
+            best_ver[key] = pv
+            best_idx[key] = i
+    keep = list(best_idx.values())
+    out = active.loc[keep].copy()
+    return out.sort_values(by=["Client", "Project"]).reset_index(drop=True)
+
+
+def _show_finance_collection_dashboard() -> None:
+    """דשבורד כספים וגבייה — מדדים, טבלת מעקב ועדכון סטטוס תשלום."""
+    st.subheader("💰 דשבורד פיננסי וגבייה")
+
+    rows = read_quotes_csv()
+    if not rows:
+        st.info("אין נתוני הצעות בגיליון quotes.")
+        return
+
+    quotes_df = pd.DataFrame(rows)
+    quotes_df = quotes_df.reindex(columns=QUOTES_CSV_COLUMNS, fill_value="")
+    for pay_col in ("מקדמה שולמה", "גמר חשבון שולם"):
+        if pay_col in quotes_df.columns:
+            quotes_df[pay_col] = quotes_df[pay_col].map(_normalize_payment_cell)
+
+    deduped = _finance_dedupe_quotes_df(quotes_df)
+    if deduped.empty:
+        st.info("אין פרויקטים להצגה (לאחר סינון הצעות מבוטלות).")
+        return
+
+    projects_rows = read_projects()
+    proj_status: dict[tuple[str, str], str] = {}
+    for pr in projects_rows:
+        ck = ((pr.get("Client") or "").strip(), (pr.get("Project Name") or "").strip())
+        if ck[1]:
+            proj_status[ck] = (pr.get("Status") or "").strip()
+
+    totals: list[float] = []
+    collected: list[float] = []
+    for _, row in deduped.iterrows():
+        rdict = row.to_dict()
+        price = _extract_total_from_quote_row(rdict)
+        totals.append(price)
+        if _payment_marked_yes(rdict.get("גמר חשבון שולם")):
+            collected.append(price)
+        else:
+            collected.append(0.0)
+
+    total_volume = sum(totals)
+    total_collected_full = sum(collected)
+    open_balance = total_volume - total_collected_full
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("סך היקף עסקאות (פעילים, לפי גרסה אחרונה)", f"₪{total_volume:,.0f}")
+    c2.metric("סך שנגבה במלואו (גמר חשבון שולם)", f"₪{total_collected_full:,.0f}")
+    c3.metric("יתרת חוב פתוחה / צפי הכנסה", f"₪{open_balance:,.0f}")
+
+    st.markdown("##### טבלת מעקב גבייה")
+    table_rows = []
+    for _, row in deduped.iterrows():
+        client = str(row.get("Client") or "").strip()
+        project = str(row.get("Project") or "").strip()
+        rdict = row.to_dict()
+        price = _extract_total_from_quote_row(rdict)
+        st_proj = proj_status.get((client, project), "")
+        if not st_proj:
+            st_proj = str(row.get("Status") or "").strip()
+        table_rows.append(
+            {
+                "שם פרויקט": project,
+                "לקוח": client,
+                "סטטוס": st_proj,
+                "שלב בקנבן": _normalized_kanban_stage(str(row.get("שלב עבודה") or "")),
+                "מחיר בהצעה": price,
+                "מקדמה שולמה": _normalize_payment_cell(row.get("מקדמה שולמה")),
+                "גמר חשבון שולם": _normalize_payment_cell(row.get("גמר חשבון שולם")),
+            }
+        )
+    display_df = pd.DataFrame(table_rows)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("##### עדכון סטטוס תשלום")
+    row_labels: list[str] = []
+    for _, row in deduped.iterrows():
+        client = str(row.get("Client") or "").strip()
+        project = str(row.get("Project") or "").strip()
+        version = str(row.get("Version") or "").strip() or "V1"
+        row_labels.append(f"{project} — {client} (גרסה {version})")
+    n_dedup = len(deduped)
+    selected_ix = st.selectbox(
+        "בחר פרויקט פעיל",
+        options=list(range(n_dedup)),
+        format_func=lambda i: row_labels[i] if i < len(row_labels) else str(i),
+        key="finance_pay_project_select",
+    )
+    r0 = deduped.iloc[int(selected_ix)]
+    adv_default = _payment_marked_yes(r0.get("מקדמה שולמה"))
+    final_default = _payment_marked_yes(r0.get("גמר חשבון שולם"))
+
+    cb1, cb2 = st.columns(2)
+    with cb1:
+        adv_ok = st.checkbox(
+            "מקדמה שולמה",
+            value=adv_default,
+            key=f"finance_pay_adv_{selected_ix}",
+        )
+    with cb2:
+        final_ok = st.checkbox(
+            "גמר חשבון שולם",
+            value=final_default,
+            key=f"finance_pay_final_{selected_ix}",
+        )
+
+    if st.button("💾 עדכן סטטוס תשלום", key="finance_pay_save", type="primary"):
+        date_v = str(r0.get("Date") or "").strip()
+        client_v = str(r0.get("Client") or "").strip()
+        project_v = str(r0.get("Project") or "").strip()
+        version_v = str(r0.get("Version") or "").strip() or "V1"
+        all_rows = read_quotes_csv()
+        updated = False
+        for i, qr in enumerate(all_rows):
+            if (qr.get("Date") or "").strip() != date_v:
+                continue
+            if (qr.get("Client") or "").strip() != client_v:
+                continue
+            if (qr.get("Project") or "").strip() != project_v:
+                continue
+            if not _quote_versions_equivalent_for_match(version_v, (qr.get("Version") or "").strip()):
+                continue
+            merged = {c: (qr.get(c) or "") for c in QUOTES_CSV_COLUMNS}
+            merged["מקדמה שולמה"] = "כן" if adv_ok else "לא"
+            merged["גמר חשבון שולם"] = "כן" if final_ok else "לא"
+            all_rows[i] = merged
+            updated = True
+            break
+        if updated:
+            write_quotes_csv(all_rows, skip_rerun=True)
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error("לא נמצאה שורה מתאימה לעדכון.")
+
 
 def show_quotes_management_page() -> None:
     st.title("ניהול הצעות")
@@ -7275,16 +7472,20 @@ def main() -> None:
         if st.sidebar.button("הצג נתונים גולמיים"):
             st.write(df_projects)
         _render_dropbox_access_token_hint_sidebar()
-        quotes_mode = st.radio(
-            "הצעות מחיר",
-            ["יצירת הצעה חדשה", "ניהול הצעות"],
-            horizontal=True,
-            key="quotes_mode_inline",
-        )
-        if quotes_mode == "יצירת הצעה חדשה":
-            show_quote_page()
-        else:
-            show_quotes_management_page()
+        tab_quotes, tab_finance = st.tabs(["📝 ניהול הצעות מחיר", "💰 דשבורד פיננסי וגבייה"])
+        with tab_quotes:
+            quotes_mode = st.radio(
+                "הצעות מחיר",
+                ["יצירת הצעה חדשה", "ניהול הצעות"],
+                horizontal=True,
+                key="quotes_mode_inline",
+            )
+            if quotes_mode == "יצירת הצעה חדשה":
+                show_quote_page()
+            else:
+                show_quotes_management_page()
+        with tab_finance:
+            _show_finance_collection_dashboard()
 
     elif selected_page == NAV_TASKS_PRODUCTION:
         _render_quick_comm_notifications()
