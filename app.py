@@ -1748,8 +1748,8 @@ def _format_advance_amount_storage(val) -> str:
 
 
 def _extract_total_from_quote_row(row: dict) -> float:
-    """Extract total amount from a quote row. Tries: Total Price, סה"כ, Total, מחיר סופי, היקף כספי."""
-    AMOUNT_COLS = ["Total Price", 'סה"כ', "Total", "מחיר סופי", "היקף כספי"]
+    """Extract total amount from a quote row. Tries: Total Price, סה"כ, Total, מחיר סופי, היקף כספי, מחיר בהצעה."""
+    AMOUNT_COLS = ["Total Price", 'סה"כ', "Total", "מחיר סופי", "היקף כספי", "מחיר בהצעה"]
     for col in AMOUNT_COLS:
         val = row.get(col)
         if val is None or (isinstance(val, str) and not str(val).strip()):
@@ -4025,12 +4025,14 @@ def build_transaction_invoice_pdf_bytes(
     client_name: str,
     project_name: str,
     serial: str,
-    subtotal_ex_vat: float,
-    vat_amount: float,
-    total_with_vat: float,
+    quote_total_ex_vat: float,
+    advance_paid: float,
     footer_text: str,
 ) -> bytes:
-    """יוצר PDF של חשבון עסקה לפי תבנית סטודיו 84 (TTF + reshape + bidi)."""
+    """יוצר PDF של חשבון עסקה לפי תבנית סטודיו 84 (TTF + reshape + bidi).
+
+    סיכומי מע״מ מבוססים על מחיר ההצעה (לפני מע״מ) ועל סכום המקדמה מהגיליון — לא על סכום שורות הטבלה.
+    """
     font_reg, font_bold = _resolve_hebrew_ttf_font_pair()
     if not font_reg:
         raise RuntimeError(
@@ -4047,25 +4049,36 @@ def build_transaction_invoice_pdf_bytes(
     pdf.add_font("Hebrew", "B", str(font_bold))
 
     logo_path = _resolve_studio_logo_path()
-    logo_bottom = 8.0
+    logo_y = 8.0
+    logo_bottom = logo_y
     logo_drawn = False
     try:
         if logo_path:
-            img_info = pdf.image(str(logo_path), x=10, y=8, w=40)
+            # רוחב בלבד — שמירת יחס גובה-רוחב (fpdf2: keep_aspect_ratio או השמטת h)
+            try:
+                img_info = pdf.image(
+                    str(logo_path),
+                    x=left_m,
+                    y=logo_y,
+                    w=40,
+                    keep_aspect_ratio=True,
+                )
+            except TypeError:
+                img_info = pdf.image(str(logo_path), x=left_m, y=logo_y, w=40)
             if hasattr(img_info, "rendered_height"):
                 h_mm = float(img_info.rendered_height)
             elif isinstance(img_info, (int, float)):
                 h_mm = float(img_info)
             else:
                 h_mm = 16.0
-            logo_bottom = 8.0 + h_mm
+            logo_bottom = logo_y + h_mm
             logo_drawn = True
     except Exception:
         logo_drawn = False
-        logo_bottom = 8.0
+        logo_bottom = logo_y
 
     if not logo_drawn:
-        pdf.set_xy(10, 8)
+        pdf.set_xy(left_m, logo_y)
         pdf.set_font("Hebrew", "B", 14)
         pdf.cell(45, 8, _pdf_bidi_text("Studio 84"), align="L")
 
@@ -4140,10 +4153,31 @@ def build_transaction_invoice_pdf_bytes(
         pdf.cell(w_unit, row_h, _pdf_bidi_text(f"{unit_price:,.0f} ₪"), border=1, align="R")
         pdf.cell(w_line, row_h, _pdf_bidi_text(f"{line_total:,.0f} ₪"), border=1, align="R", ln=1)
 
+    qt = max(0.0, float(quote_total_ex_vat))
+    adv = min(max(0.0, float(advance_paid)), qt)
+    adv_pct = round((adv / qt) * 100.0) if qt > 0 else 0
+    balance_before_vat = max(0.0, qt - adv)
+    vat_amount = balance_before_vat * TRANSACTION_INVOICE_VAT_RATE
+    total_with_vat = balance_before_vat + vat_amount
+
     pdf.ln(4)
     pdf.set_font("Hebrew", "", 10)
-    pdf.cell(0, 7, _pdf_bidi_text(f'סה"כ לפני מע"מ: {subtotal_ex_vat:,.2f} ₪'), align="R", ln=1)
-    pdf.cell(0, 7, _pdf_bidi_text(f'מע"מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%): {vat_amount:,.2f} ₪'), align="R", ln=1)
+    pdf.cell(0, 7, _pdf_bidi_text(f'סה"כ עסקה: {qt:,.2f} ₪'), align="R", ln=1)
+    pdf.cell(
+        0,
+        7,
+        _pdf_bidi_text(f"שולם במקדמה ({adv_pct}%): -{adv:,.2f} ₪"),
+        align="R",
+        ln=1,
+    )
+    pdf.cell(0, 7, _pdf_bidi_text(f'יתרה לפני מע"מ: {balance_before_vat:,.2f} ₪'), align="R", ln=1)
+    pdf.cell(
+        0,
+        7,
+        _pdf_bidi_text(f'מע"מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%): {vat_amount:,.2f} ₪'),
+        align="R",
+        ln=1,
+    )
     pdf.set_font("Hebrew", "B", 12)
     pdf.cell(0, 9, _pdf_bidi_text(f'סה"כ לתשלום: {total_with_vat:,.2f} ₪'), align="R", ln=1)
 
@@ -4262,20 +4296,26 @@ def _show_finance_collection_dashboard() -> None:
             rdict_dem = r_dem.to_dict()
             price_dem = _extract_total_from_quote_row(rdict_dem)
             adv_dem = min(_parse_currency_amount(r_dem.get("סכום מקדמה")), price_dem)
-            balance_dem = price_dem - adv_dem
+            balance_before_vat = max(0.0, price_dem - adv_dem)
+            adv_pct_dem = round((adv_dem / price_dem) * 100.0) if price_dem > 0 else 0
             _main_u, _up_u, drop_deliv_dem = find_project_dropbox_links_for_client(client_dem, project_dem)
             link_line = (drop_deliv_dem or "").strip() or "לא הוזן קישור"
 
             st.caption(
-                "ערכו את הסעיפים לפי הצורך; ניתן להוסיף שורות (למשל תוספת מבטים או שעות עריכה). "
-                "הסכומים מחושבים ככמות × מחיר; המע״מ מחושב על הסה״כ לפני מע״מ."
+                "ערכו את הסעיפים לפי הצורך; ניתן להוסיף שורות (פירוט שירותים). "
+                "עמודת המחיר מייצגת את מחיר השורה לפני מע״מ; ברירת המחדל היא **סך העסקה המלא** מההצעה. "
+                "סיכומי המקדמה, המע״מ והיתרה לתשלום (במסך וב-PDF) מחושבים לפי מחיר ההצעה וסכום המקדמה בגיליון."
             )
+            base1, base2 = st.columns(2)
+            base1.metric("מחיר בהצעה (מגיליון)", f"₪{price_dem:,.0f}")
+            base2.metric("סכום מקדמה ששולם (מגיליון)", f"₪{adv_dem:,.0f} ({adv_pct_dem}%)")
+
             demand_df = pd.DataFrame(
                 [
                     {
                         "תיאור": f"תשלום עבור פרויקט {project_dem}",
                         "כמות": 1.0,
-                        "מחיר": float(balance_dem),
+                        "מחיר": float(price_dem),
                     },
                     {"תיאור": "", "כמות": 1.0, "מחיר": 0.0},
                     {"תיאור": "", "כמות": 1.0, "מחיר": 0.0},
@@ -4294,22 +4334,30 @@ def _show_finance_collection_dashboard() -> None:
                 key=f"finance_demand_lines_{demand_ix}",
             )
 
-            subtotal = 0.0
+            lines_subtotal = 0.0
             if edited_demand is not None and not edited_demand.empty:
                 ed = edited_demand.copy()
                 ed["כמות"] = pd.to_numeric(ed["כמות"], errors="coerce").fillna(0.0)
                 ed["מחיר"] = pd.to_numeric(ed["מחיר"], errors="coerce").fillna(0.0)
-                subtotal = float((ed["כמות"] * ed["מחיר"]).sum())
-            vat_amt = subtotal * TRANSACTION_INVOICE_VAT_RATE
-            total_pay = subtotal + vat_amt
+                lines_subtotal = float((ed["כמות"] * ed["מחיר"]).sum())
 
-            tot1, tot2, tot3 = st.columns(3)
-            tot1.metric('סה"כ לפני מע"מ', f"₪{subtotal:,.0f}")
-            tot2.metric(
+            vat_amt = balance_before_vat * TRANSACTION_INVOICE_VAT_RATE
+            total_pay = balance_before_vat + vat_amt
+
+            tot1, tot2, tot3, tot4, tot5 = st.columns(5)
+            tot1.metric('סה"כ עסקה', f"₪{price_dem:,.0f}")
+            tot2.metric(f"מקדמה ({adv_pct_dem}%)", f"-₪{adv_dem:,.0f}")
+            tot3.metric('יתרה לפני מע"מ', f"₪{balance_before_vat:,.0f}")
+            tot4.metric(
                 f'מע"מ ({TRANSACTION_INVOICE_VAT_RATE * 100:.0f}%)',
                 f"₪{vat_amt:,.0f}",
             )
-            tot3.metric('סה"כ לתשלום (כולל מע"מ)', f"₪{total_pay:,.0f}")
+            tot5.metric('סה"כ לתשלום', f"₪{total_pay:,.0f}")
+            if lines_subtotal > 0 and abs(lines_subtotal - price_dem) > 0.01:
+                st.caption(
+                    f"סכום שורות הטבלה (כמות×מחיר) = ₪{lines_subtotal:,.0f}; "
+                    "המע״מ והיתרה לתשלום לפי מחיר ההצעה והמקדמה בגיליון, כמפורט למעלה."
+                )
 
             ss_serial = f"txn_inv_serial_{demand_ix}"
             if ss_serial not in st.session_state:
@@ -4327,9 +4375,8 @@ def _show_finance_collection_dashboard() -> None:
                     client_dem,
                     project_dem,
                     serial,
-                    subtotal,
-                    vat_amt,
-                    total_pay,
+                    price_dem,
+                    adv_dem,
                     footer_t,
                 )
             except Exception as e:
