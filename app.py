@@ -982,6 +982,7 @@ KANBAN_WORK_STAGES = [
     "חומרים ותאורה",
     "ממתין לפידבק",
     "רינדור סופי",
+    "אחר",
     "נמסר",
 ]
 
@@ -5079,11 +5080,13 @@ def _kanban_stage_lookup_by_client_project() -> dict[tuple[str, str], str]:
 
 
 def _normalized_kanban_stage(val: str) -> str:
-    """מחזיר שלב קנבן תקין; ערך ריק או לא מוכר → 'התקבל'."""
+    """מחזיר שלב קנבן תקין; ערך ריק → 'התקבל'; לא מוכר → 'אחר' (זרימה לא סטנדרטית)."""
     v = (val or "").strip()
+    if not v:
+        return KANBAN_WORK_STAGES[0]
     if v in KANBAN_WORK_STAGES:
         return v
-    return KANBAN_WORK_STAGES[0]
+    return "אחר"
 
 
 def _kanban_work_stage_changed(key: str, client: str, project: str, version: str) -> None:
@@ -6982,18 +6985,15 @@ def main() -> None:
                         + PROJECTS_DB_COLUMNS[_pi + 1 :]
                     )
                     filtered_df = filtered_df[_slice_col_order]
-                    _cols_compare = [c for c in filtered_df.columns if c != "שלב בקנבן"]
+                    filtered_for_edit = filtered_df.drop(columns=["Status"], errors="ignore")
+                    _cols_compare = [c for c in filtered_for_edit.columns if c != "שלב בקנבן"]
                     try:
                         edited_filtered_df = st.data_editor(
-                            filtered_df,
+                            filtered_for_edit,
                             hide_index=True,
                             use_container_width=True,
                             key="drilldown_editor",
                             column_config={
-                                "Status": st.column_config.TextColumn(
-                                    "סטטוס ניהול (בסיס)",
-                                    help="ערך מגיליון הפרויקטים — נפרד משלב העבודה בקנבן.",
-                                ),
                                 "שלב בקנבן": st.column_config.TextColumn(
                                     "שלב בקנבן",
                                     help="שלב עבודה מעודכן מלוח הקנבן (גיליון הצעות).",
@@ -7015,9 +7015,11 @@ def main() -> None:
                         )
                     except Exception as e:
                         st.error(f"שגיאה בהצגת נתונים: {e}")
-                        edited_filtered_df = filtered_df
-                    if not edited_filtered_df[_cols_compare].equals(filtered_df[_cols_compare]):
-                        df_projects.update(edited_filtered_df[PROJECTS_DB_COLUMNS])
+                        edited_filtered_df = filtered_for_edit
+                    if not edited_filtered_df[_cols_compare].equals(filtered_for_edit[_cols_compare]):
+                        merged_edit = edited_filtered_df.copy()
+                        merged_edit["Status"] = filtered_df["Status"].values
+                        df_projects.update(merged_edit[PROJECTS_DB_COLUMNS])
                         updated = df_projects.to_dict(orient="records")
                         write_projects(updated)
                         st.success("הנתונים עודכנו בהצלחה!")
