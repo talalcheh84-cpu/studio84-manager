@@ -5066,6 +5066,18 @@ def _signed_quote_rows_for_project_hub() -> list[dict]:
     return list(best.values())
 
 
+def _kanban_stage_lookup_by_client_project() -> dict[tuple[str, str], str]:
+    """מפת (Client, Project) לשלב קנבן מעודכן מהגיליון quotes (הצעות Signed / הומר לפרויקט)."""
+    out: dict[tuple[str, str], str] = {}
+    for r in _signed_quote_rows_for_project_hub():
+        c = (r.get("Client") or "").strip()
+        p = (r.get("Project") or "").strip()
+        if not p:
+            continue
+        out[(c, p)] = _normalized_kanban_stage(r.get("שלב עבודה") or "")
+    return out
+
+
 def _normalized_kanban_stage(val: str) -> str:
     """מחזיר שלב קנבן תקין; ערך ריק או לא מוכר → 'התקבל'."""
     v = (val or "").strip()
@@ -6952,6 +6964,25 @@ def main() -> None:
                 if filtered_df.empty:
                     st.info("לא נמצאו פרויקטים." if (st.session_state.monitor_filter == "__ALL__") else "לא נמצאו פרויקטים פעילים." if (st.session_state.monitor_filter == ["בעבודה", "ממתין להתחלה"]) else f"לא נמצאו פרויקטים בקטגוריה '{st.session_state.monitor_title}'.")
                 else:
+                    _kanban_map = _kanban_stage_lookup_by_client_project()
+
+                    def _row_kanban_stage(row: pd.Series) -> str:
+                        k = (
+                            (row.get("Client") or "").strip(),
+                            (row.get("Project Name") or "").strip(),
+                        )
+                        return _kanban_map.get(k, "")
+
+                    filtered_df = filtered_df.copy()
+                    filtered_df["שלב בקנבן"] = filtered_df.apply(_row_kanban_stage, axis=1)
+                    _pi = PROJECTS_DB_COLUMNS.index("Project Name")
+                    _slice_col_order = (
+                        PROJECTS_DB_COLUMNS[: _pi + 1]
+                        + ["שלב בקנבן"]
+                        + PROJECTS_DB_COLUMNS[_pi + 1 :]
+                    )
+                    filtered_df = filtered_df[_slice_col_order]
+                    _cols_compare = [c for c in filtered_df.columns if c != "שלב בקנבן"]
                     try:
                         edited_filtered_df = st.data_editor(
                             filtered_df,
@@ -6959,6 +6990,15 @@ def main() -> None:
                             use_container_width=True,
                             key="drilldown_editor",
                             column_config={
+                                "Status": st.column_config.TextColumn(
+                                    "סטטוס ניהול (בסיס)",
+                                    help="ערך מגיליון הפרויקטים — נפרד משלב העבודה בקנבן.",
+                                ),
+                                "שלב בקנבן": st.column_config.TextColumn(
+                                    "שלב בקנבן",
+                                    help="שלב עבודה מעודכן מלוח הקנבן (גיליון הצעות).",
+                                    disabled=True,
+                                ),
                                 "Dropbox_Main": st.column_config.LinkColumn(
                                     "דרופבוקס - ראשי",
                                     display_text="תיקייה ראשית",
@@ -6976,8 +7016,8 @@ def main() -> None:
                     except Exception as e:
                         st.error(f"שגיאה בהצגת נתונים: {e}")
                         edited_filtered_df = filtered_df
-                    if not edited_filtered_df.equals(filtered_df):
-                        df_projects.update(edited_filtered_df)
+                    if not edited_filtered_df[_cols_compare].equals(filtered_df[_cols_compare]):
+                        df_projects.update(edited_filtered_df[PROJECTS_DB_COLUMNS])
                         updated = df_projects.to_dict(orient="records")
                         write_projects(updated)
                         st.success("הנתונים עודכנו בהצלחה!")
