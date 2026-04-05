@@ -5087,8 +5087,7 @@ def _kanban_work_stage_changed(key: str, client: str, project: str, version: str
             merged["שלב עבודה"] = new_stage
             rows[i] = merged
             write_quotes_csv(rows, skip_rerun=True)
-            st.cache_data.clear()
-            st.rerun()
+            # לא לקרוא st.rerun() כאן — בתוך on_change זה no-op; Streamlit מריץ מחדש אחרי ה-callback.
             return
 
 
