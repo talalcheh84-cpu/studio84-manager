@@ -1,3 +1,4 @@
+import hashlib
 import html
 import io
 import re
@@ -1020,6 +1021,7 @@ QUOTES_CSV_COLUMNS = [
     "גמר חשבון שולם",
     "freelancer_cost",
     "misc_expenses",
+    "signed_quote_path",
 ]
 
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
@@ -4002,6 +4004,18 @@ def _studio_transaction_invoice_footer_text() -> str:
     return STUDIO_INVOICE_PAYMENT_FOOTER_LINE
 
 
+def _transaction_invoice_draw_account_notes(pdf: FPDF, account_notes: str) -> None:
+    """פסקת הערות לחשבון — מעל קו הפוטר ופרטי הבנק."""
+    t = (account_notes or "").strip()
+    if not t:
+        return
+    pdf.ln(3)
+    pdf.set_font("Hebrew", "", 9)
+    pdf.set_text_color(55, 55, 55)
+    pdf.multi_cell(0, 5, _pdf_bidi_text(t), align="R")
+    pdf.set_text_color(0, 0, 0)
+
+
 def _transaction_invoice_draw_footer(pdf: FPDF, footer_text: str, left_m: float, page_w: float) -> None:
     """קו מפריד דק ותחתית עם פרטי התקשרות ובנק."""
     pdf.set_auto_page_break(auto=False)
@@ -4028,6 +4042,7 @@ def build_transaction_invoice_pdf_bytes(
     quote_total_ex_vat: float,
     advance_paid: float,
     footer_text: str,
+    account_notes: str = "",
 ) -> bytes:
     """יוצר PDF של חשבון עסקה לפי תבנית סטודיו 84 (TTF + reshape + bidi).
 
@@ -4181,6 +4196,7 @@ def build_transaction_invoice_pdf_bytes(
     pdf.set_font("Hebrew", "B", 12)
     pdf.cell(0, 9, _pdf_bidi_text(f'סה"כ לתשלום: {total_with_vat:,.2f} ₪'), align="R", ln=1)
 
+    _transaction_invoice_draw_account_notes(pdf, account_notes)
     _transaction_invoice_draw_footer(pdf, footer_text, left_m, page_w)
 
     out = pdf.output(dest="S")
@@ -4213,6 +4229,51 @@ def _finance_dedupe_quotes_df(quotes_df: pd.DataFrame) -> pd.DataFrame:
     keep = list(best_idx.values())
     out = active.loc[keep].copy()
     return out.sort_values(by=["Client", "Project"]).reset_index(drop=True)
+
+
+SIGNED_QUOTE_UPLOAD_DIR = Path(__file__).resolve().parent / "signed_quote_uploads"
+
+
+def _sanitize_signed_quote_filename_part(s: str, max_len: int = 48) -> str:
+    x = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (s or "").strip())
+    x = re.sub(r"\s+", "_", x)
+    return (x[:max_len] or "quote")
+
+
+def _merge_csv_row_from_series(r: pd.Series) -> dict:
+    out: dict[str, str] = {}
+    for c in QUOTES_CSV_COLUMNS:
+        v = r.get(c)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            out[c] = ""
+        else:
+            out[c] = str(v).strip()
+    return out
+
+
+def _persist_signed_quote_upload(
+    client: str,
+    project: str,
+    version: str,
+    uploaded_bytes: bytes,
+    original_name: str,
+) -> str | None:
+    """שומר העלאה במחשב ומחזיר נתיב מוחלט."""
+    try:
+        ext = Path(original_name or "").suffix.lower()
+        if ext not in (".pdf", ".png", ".jpg", ".jpeg"):
+            ext = ".pdf"
+        SIGNED_QUOTE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        stem = (
+            f"{_sanitize_signed_quote_filename_part(client)}_"
+            f"{_sanitize_signed_quote_filename_part(project)}_"
+            f"{_sanitize_signed_quote_filename_part(version)}_{uuid.uuid4().hex[:8]}"
+        )
+        dest = SIGNED_QUOTE_UPLOAD_DIR / f"{stem}{ext}"
+        dest.write_bytes(uploaded_bytes)
+        return str(dest.resolve())
+    except Exception:
+        return None
 
 
 def _show_finance_collection_dashboard() -> None:
@@ -4310,6 +4371,64 @@ def _show_finance_collection_dashboard() -> None:
             base1.metric("מחיר בהצעה (מגיליון)", f"₪{price_dem:,.0f}")
             base2.metric("סכום מקדמה ששולם (מגיליון)", f"₪{adv_dem:,.0f} ({adv_pct_dem}%)")
 
+            version_dem = str(r_dem.get("Version") or "").strip() or "V1"
+            signed_path_saved = str(r_dem.get("signed_quote_path") or "").strip()
+
+            uploaded_sq = st.file_uploader(
+                "העלאת הצעת מחיר חתומה (PDF/תמונה)",
+                type=["pdf", "png", "jpg"],
+                key=f"finance_signed_quote_{demand_ix}",
+            )
+
+            if uploaded_sq is not None:
+                raw_up = uploaded_sq.getvalue()
+                sig = hashlib.md5(raw_up).hexdigest()
+                sig_state_key = f"finance_sq_saved_sig_{demand_ix}_{client_dem}_{project_dem}_{version_dem}"
+                if st.session_state.get(sig_state_key) != sig:
+                    dest_path = _persist_signed_quote_upload(
+                        client_dem, project_dem, version_dem, raw_up, uploaded_sq.name
+                    )
+                    if dest_path:
+                        merged = _merge_csv_row_from_series(r_dem)
+                        merged["signed_quote_path"] = dest_path
+                        if update_quote_in_csv(
+                            client_dem, project_dem, version_dem, merged, skip_rerun=True
+                        ):
+                            st.session_state[sig_state_key] = sig
+                            st.rerun()
+                        else:
+                            st.warning("לא נמצאה שורת הצעה במסד — נתיב הקובץ לא נשמר בגיליון.")
+                    else:
+                        st.error("שמירת הקובץ נכשלה.")
+
+            if uploaded_sq is not None:
+                up_name = (uploaded_sq.name or "").lower()
+                if up_name.endswith(".pdf"):
+                    st.download_button(
+                        label="הורד PDF — צפייה בהצעה החתומה",
+                        data=uploaded_sq.getvalue(),
+                        file_name=Path(uploaded_sq.name or "signed.pdf").name,
+                        mime="application/pdf",
+                        key=f"finance_sq_preview_dl_new_{demand_ix}",
+                    )
+                else:
+                    st.image(io.BytesIO(uploaded_sq.getvalue()))
+            elif signed_path_saved:
+                p_sq = Path(signed_path_saved)
+                if p_sq.is_file():
+                    if p_sq.suffix.lower() == ".pdf":
+                        st.download_button(
+                            label="הורד PDF — צפייה בהצעה החתומה",
+                            data=p_sq.read_bytes(),
+                            file_name=p_sq.name,
+                            mime="application/pdf",
+                            key=f"finance_sq_preview_dl_saved_{demand_ix}",
+                        )
+                    elif p_sq.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                        st.image(str(p_sq))
+                else:
+                    st.caption("קובץ ההצעה החתומה שמור בגיליון אינו נמצא בנתיב.")
+
             demand_df = pd.DataFrame(
                 [
                     {
@@ -4332,6 +4451,14 @@ def _show_finance_collection_dashboard() -> None:
                 hide_index=True,
                 use_container_width=True,
                 key=f"finance_demand_lines_{demand_ix}",
+            )
+
+            inv_notes_key = f"finance_inv_notes_{demand_ix}"
+            if inv_notes_key not in st.session_state:
+                st.session_state[inv_notes_key] = "ניתן להעביר תשלום באמצעות העברה בנקאית."
+            invoice_notes = st.text_area(
+                "הערות לחשבון (יופיעו ב-PDF)",
+                key=inv_notes_key,
             )
 
             lines_subtotal = 0.0
@@ -4378,6 +4505,7 @@ def _show_finance_collection_dashboard() -> None:
                     price_dem,
                     adv_dem,
                     footer_t,
+                    account_notes=str(invoice_notes or ""),
                 )
             except Exception as e:
                 st.error(f"שגיאה ביצירת PDF: {e}")
