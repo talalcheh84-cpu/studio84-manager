@@ -145,6 +145,12 @@ TEMP_PROPOSALS_DIR = BASE_DIR / "temp_proposals"
 # עותק קשיח של ה-PDF האחרון בתיקיית הפרויקט – לצירוף למייל (עמיד ב-rerun של Streamlit)
 CURRENT_QUOTE_TEMP_PDF = BASE_DIR / "current_quote_temp.pdf"
 
+# יומן ומשימות אישי (טל / ערן) — CSV מקומי, עמיד ב-rerun
+PERSONAL_SCHEDULE_TASKS_CSV = BASE_DIR / "personal_schedule_tasks.csv"
+PERSONAL_SCHEDULE_COLUMNS = ["Task ID", "User", "Title", "Start_Time", "End_Time", "Zoom_Link"]
+PERSONAL_CAL_USER_TAL = "טל"
+PERSONAL_CAL_USER_ERAN = "ערן"
+
 
 def _persist_current_quote_temp_pdf(source_path: str | Path) -> None:
     """מעתיק את קובץ ה-PDF לשם קבוע בשורש הפרויקט לשליחה אמינה."""
@@ -681,6 +687,7 @@ MANAGEMENT_USERS = frozenset({"טל", "ערן"})
 NAV_MAIN_PROJECT_ROOM = "📊 חדר מצב (קנבן)"
 NAV_MY_TASKS = "🖥️ המשימות שלי (מוניטור צוות)"
 NAV_PROJECT_FOLDERS = "📁 תיקי פרויקטים (מידע וקשר)"
+NAV_PERSONAL_CALENDAR = "📅 יומן ומשימות"
 NAV_MGMT_SEPARATOR = "--- אזור ניהול ---"
 NAV_QUOTES_FINANCE = "📝 הצעות מחיר ופיננסים"
 NAV_TASKS_PRODUCTION = "🎯 הפקת פרויקטים והקצאת משימות"
@@ -6305,6 +6312,160 @@ def show_project_folders_page() -> None:
                 c3.link_button("דרופבוקס — תוצרים", dd, use_container_width=True)
 
 
+def _ensure_personal_schedule_csv() -> None:
+    if not PERSONAL_SCHEDULE_TASKS_CSV.exists() or PERSONAL_SCHEDULE_TASKS_CSV.stat().st_size == 0:
+        PERSONAL_SCHEDULE_TASKS_CSV.parent.mkdir(parents=True, exist_ok=True)
+        with open(PERSONAL_SCHEDULE_TASKS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(PERSONAL_SCHEDULE_COLUMNS)
+
+
+def read_personal_schedule_tasks() -> list[dict]:
+    """משימות יומן אישי מקובץ CSV מקומי."""
+    _ensure_personal_schedule_csv()
+    try:
+        df = pd.read_csv(PERSONAL_SCHEDULE_TASKS_CSV, encoding="utf-8-sig")
+    except Exception:
+        return []
+    if df.empty:
+        return []
+    df = df.reindex(columns=PERSONAL_SCHEDULE_COLUMNS, fill_value="").fillna("")
+    return df.to_dict(orient="records")
+
+
+def write_personal_schedule_tasks(rows: list[dict]) -> None:
+    """שמירת משימות יומן אישי ל-CSV מקומי."""
+    _ensure_personal_schedule_csv()
+    with open(PERSONAL_SCHEDULE_TASKS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=PERSONAL_SCHEDULE_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: str(r.get(c, "") or "") for c in PERSONAL_SCHEDULE_COLUMNS})
+
+
+def next_personal_schedule_task_id(rows: list[dict]) -> int:
+    max_id = 0
+    for r in rows or []:
+        try:
+            v = int(str(r.get("Task ID") or "0").strip() or "0")
+        except ValueError:
+            continue
+        if v > max_id:
+            max_id = v
+    return max_id + 1
+
+
+def show_personal_calendar_page() -> None:
+    """יומן ומשימות אישי לטל ולערן — תצוגת שבוע/שעות עם streamlit-calendar; שמירה ב-CSV מקומי."""
+    st.title("📅 יומן ומשימות")
+    st.caption(
+        f"הנתונים נשמרים בקובץ מקומי: `{PERSONAL_SCHEDULE_TASKS_CSV.name}` (בתיקיית האפליקציה) — לא נמחקים ברענון."
+    )
+
+    if st.session_state.pop("personal_cal_just_saved", None):
+        st.success("המשימה נשמרה.")
+
+    calendar_owner = st.radio(
+        "בחר יומן",
+        ["היומן של טל", "היומן של ערן"],
+        horizontal=True,
+        key="personal_cal_owner_radio",
+    )
+    user_key = PERSONAL_CAL_USER_TAL if "טל" in calendar_owner else PERSONAL_CAL_USER_ERAN
+
+    with st.expander("➕ הוספת משימה חדשה", expanded=False):
+        with st.form("personal_cal_add_task"):
+            f_title = st.text_input("כותרת", key="pcal_f_title")
+            c1, c2 = st.columns(2)
+            with c1:
+                start_dt = st.datetime_input(
+                    "תאריך ושעת התחלה",
+                    value=datetime.now().replace(second=0, microsecond=0),
+                    step=timedelta(minutes=15),
+                    key="pcal_form_start",
+                )
+            with c2:
+                end_dt = st.datetime_input(
+                    "תאריך ושעת סיום",
+                    value=(datetime.now() + timedelta(hours=1)).replace(second=0, microsecond=0),
+                    step=timedelta(minutes=15),
+                    key="pcal_form_end",
+                )
+            f_zoom = st.text_input("קישור לזום (אופציונלי)", key="pcal_f_zoom")
+            submitted = st.form_submit_button("שמור משימה", type="primary", use_container_width=True)
+
+        if submitted:
+            if not (f_title or "").strip():
+                st.error("יש להזין כותרת.")
+            elif end_dt <= start_dt:
+                st.error("שעת הסיום חייבת להיות אחרי שעת ההתחלה.")
+            else:
+                rows = read_personal_schedule_tasks()
+                tid = next_personal_schedule_task_id(rows)
+                rows.append(
+                    {
+                        "Task ID": str(tid),
+                        "User": user_key,
+                        "Title": (f_title or "").strip(),
+                        "Start_Time": start_dt.isoformat(timespec="seconds"),
+                        "End_Time": end_dt.isoformat(timespec="seconds"),
+                        "Zoom_Link": _safe_link(f_zoom),
+                    }
+                )
+                write_personal_schedule_tasks(rows)
+                st.session_state["personal_cal_just_saved"] = True
+                st.rerun()
+
+    all_rows = read_personal_schedule_tasks()
+    tasks_df = pd.DataFrame(all_rows, columns=PERSONAL_SCHEDULE_COLUMNS)
+    if tasks_df.empty:
+        tasks_df = pd.DataFrame(columns=PERSONAL_SCHEDULE_COLUMNS)
+    user_mask = (tasks_df["User"].astype(str).str.strip() == user_key)
+    filtered_tasks_df = tasks_df.loc[user_mask].copy()
+
+    events: list[dict] = []
+    for _, row in filtered_tasks_df.iterrows():
+        title = str(row.get("Title") or "").strip() or "ללא כותרת"
+        st_start = str(row.get("Start_Time") or "").strip()
+        st_end = str(row.get("End_Time") or "").strip()
+        if not st_start or not st_end:
+            continue
+        try:
+            s = pd.to_datetime(st_start)
+            e = pd.to_datetime(st_end)
+        except Exception:
+            continue
+        if pd.isna(s) or pd.isna(e):
+            continue
+        ev: dict = {
+            "id": str(row.get("Task ID", "")),
+            "title": title,
+            "start": s.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end": e.strftime("%Y-%m-%dT%H:%M:%S"),
+            "color": CALENDAR_TASK_COLOR_DEFAULT if user_key == PERSONAL_CAL_USER_TAL else "#2e7d32",
+        }
+        zurl = _safe_link(str(row.get("Zoom_Link") or ""))
+        if zurl:
+            ev["url"] = zurl
+        events.append(ev)
+
+    calendar_options = {
+        "initialView": "timeGridWeek",
+        "locale": "he",
+        "direction": "rtl",
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,timeGridWeek,timeGridDay",
+        },
+        "slotMinTime": "06:00:00",
+        "slotMaxTime": "22:00:00",
+        "height": 680,
+    }
+    st.subheader("לוח שנה")
+    calendar(events=events, options=calendar_options, key=f"personal_cal_widget_{user_key}")
+
+
 def show_monitor_3d_page() -> None:
     """מסך מוניטור צוות / משימות: פרויקטים פעילים עם עריכת סטטוס, גאנט ומשימות."""
     st.title("מוניטור צוות / משימות 🖥️")
@@ -7950,6 +8111,7 @@ def main() -> None:
         NAV_MAIN_PROJECT_ROOM,
         NAV_MY_TASKS,
         NAV_PROJECT_FOLDERS,
+        NAV_PERSONAL_CALENDAR,
     ]
     if is_management:
         menu_options.extend(
@@ -8114,6 +8276,12 @@ def main() -> None:
         _render_quick_comm_sidebar_form()
         _render_dropbox_access_token_hint_sidebar()
         show_project_folders_page()
+
+    elif selected_page == NAV_PERSONAL_CALENDAR:
+        _render_quick_comm_notifications()
+        _render_quick_comm_sidebar_form()
+        _render_dropbox_access_token_hint_sidebar()
+        show_personal_calendar_page()
 
     elif selected_page == NAV_MY_TASKS:
         _render_quick_comm_notifications()
