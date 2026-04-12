@@ -31,6 +31,7 @@ try:
 except ImportError:
     PathRoot = None
 import streamlit as st
+from streamlit_option_menu import option_menu
 from streamlit_calendar import calendar
 import holidays
 from docxtpl import DocxTemplate
@@ -692,6 +693,44 @@ NAV_MGMT_SEPARATOR = "--- אזור ניהול ---"
 NAV_QUOTES_FINANCE = "📝 הצעות מחיר ופיננסים"
 NAV_TASKS_PRODUCTION = "🎯 הפקת פרויקטים והקצאת משימות"
 NAV_CRM = "📞 לקוחות ואנשי קשר"
+
+# אייקוני Bootstrap (streamlit-option-menu) לפי סדר פריטי הניווט
+_NAV_ICON_BY_PAGE = {
+    NAV_MAIN_PROJECT_ROOM: "kanban",
+    NAV_MY_TASKS: "display",
+    NAV_PROJECT_FOLDERS: "folder2-open",
+    NAV_PERSONAL_CALENDAR: "calendar3",
+    NAV_MGMT_SEPARATOR: "dash-lg",
+    NAV_QUOTES_FINANCE: "bar-chart-line",
+    NAV_TASKS_PRODUCTION: "bullseye",
+    NAV_CRM: "telephone",
+}
+
+_MAIN_NAV_OPTION_MENU_STYLES = {
+    "container": {
+        "padding": "0.5rem 0.35rem",
+        "background-color": "transparent",
+    },
+    "icon": {
+        "color": "#3a3a3c",
+        "font-size": "1.05rem",
+    },
+    "nav-link": {
+        "text-align": "right",
+        "font-size": "16px",
+        "color": "#1d1d1f",
+        "border-radius": "10px",
+        "padding": "0.5rem 0.65rem",
+        "margin": "2px 0",
+        "--hover-color": "#ececec",
+    },
+    "nav-link-selected": {
+        "background-color": "#007AFF",
+        "color": "#ffffff",
+        "font-weight": "400",
+        "border-radius": "10px",
+    },
+}
 
 # מיפוי שם משתמש ממסך ההתחברות (אנגלית, lower) → שם קנוני ב-TEAM_EMAILS / משימות.
 # לאחר הסרת בורר הזהות בסיידבר, current_user נקבע רק בכניסה — יש להרחיב כאן לפי שמות ב-secrets.
@@ -8123,11 +8162,17 @@ def main() -> None:
             ]
         )
 
-    selected_page = st.sidebar.radio(
-        "ניווט ראשי",
-        menu_options,
-        key="nav_main_primary",
-    )
+    with st.sidebar:
+        selected_page = option_menu(
+            None,
+            menu_options,
+            default_index=0,
+            menu_icon=None,
+            icons=[_NAV_ICON_BY_PAGE[o] for o in menu_options],
+            orientation="vertical",
+            styles=_MAIN_NAV_OPTION_MENU_STYLES,
+            key="nav_main_option_menu",
+        )
     if selected_page == NAV_MGMT_SEPARATOR:
         st.warning("אנא בחר באחת מהאפשרויות מתחת לאזור הניהול.")
         selected_page = st.session_state.get("last_valid_main_nav", menu_options[0])
