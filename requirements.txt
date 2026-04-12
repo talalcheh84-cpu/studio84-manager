@@ -1,4 +1,5 @@
 streamlit
+streamlit-option-menu
 pandas
 streamlit-calendar
 holidays
@@ -11,3 +12,4 @@ fpdf2
 arabic-reshaper
 python-bidi
 streamlit-calendar
+streamlit-option-menu
