@@ -1112,6 +1112,30 @@ st.markdown(
   div[data-testid="stDataFrame"] tbody tr:hover {
     background-color: rgba(0, 0, 0, 0.035) !important;
   }
+
+  /* סיידבר בצד ימין (RTL) — Streamlit מסדר את הסיידבר והמסך הראשי ב-flex */
+  div[data-testid="stAppViewContainer"] {
+    flex-direction: row-reverse !important;
+  }
+
+  /* העברת הסיידבר עצמו לצד ימין (משלים ל-row-reverse אם נדרש) */
+  section[data-testid="stSidebar"] {
+    left: auto !important;
+    right: 0 !important;
+  }
+
+  /* כפתור פתיחה/סגירה של הסיידבר */
+  button[data-testid="collapsedControl"] {
+    left: auto !important;
+    right: 1rem !important;
+  }
+
+  /* תוכן ראשי — RTL במסכים רחבים בלבד; מצומצם ל-.main כדי לא לשבור דיאלוגים/כפתורי מודאל */
+  @media (min-width: 768px) {
+    .main .block-container {
+      direction: rtl;
+    }
+  }
 </style>
 """,
     unsafe_allow_html=True,
