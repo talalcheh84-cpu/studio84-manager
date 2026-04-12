@@ -1026,6 +1026,96 @@ ADMIN_NAMES = {"Admin (טלי / ערן)", "Admin", "טלי", "ערן"}
 
 st.set_page_config(page_title="דשבורד ניהול סטודיו", layout="wide")
 
+st.markdown(
+    """
+<style>
+  /* Global premium shell — לא משנים direction/text-align כדי לשמור על RTL ועברית */
+  .stApp {
+    background-color: #f4f7f6;
+  }
+  .main .block-container {
+    padding-top: 1.25rem;
+    padding-bottom: 2rem;
+  }
+
+  /* טיפוגרפיה נקייה — כותרות בגוון אפור-פחם עמוק */
+  .stApp,
+  .stApp .markdown-text-container {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .stApp h1, .stApp h2, .stApp h3,
+  div[data-testid="stMarkdownContainer"] h1,
+  div[data-testid="stMarkdownContainer"] h2,
+  div[data-testid="stMarkdownContainer"] h3 {
+    color: #1d1d1f !important;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  /* Metrics — קלפים צפים */
+  div[data-testid="stMetric"] {
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    padding: 1rem 1.1rem;
+    border: 1px solid rgba(0, 0, 0, 0.04);
+  }
+
+  /* Expanders — קלפים צפים */
+  div[data-testid="stExpander"] {
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    padding: 0.35rem 0.6rem;
+    border: 1px solid rgba(0, 0, 0, 0.04);
+  }
+  div[data-testid="stExpander"] details {
+    border: none !important;
+  }
+
+  /* כפתורים — primary / secondary */
+  .stButton > button {
+    border-radius: 8px !important;
+    border: none !important;
+    transition: background-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease !important;
+  }
+  .stButton > button[kind="primary"]:hover {
+    background-color: #0a6ebd !important;
+    box-shadow: 0 4px 14px rgba(10, 110, 189, 0.28) !important;
+  }
+  .stButton > button[kind="secondary"]:hover {
+    background-color: #e8f4fc !important;
+    color: #0a6ebd !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+  }
+
+  /* שדות קלט */
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stNumberInput"] input,
+  div[data-testid="stDateInput"] input {
+    border-radius: 8px !important;
+  }
+  div[data-testid="stTextArea"] textarea {
+    border-radius: 8px !important;
+  }
+
+  /* טבלאות / Dataframes — פחות "אקסל", יותר מרחף */
+  div[data-testid="stDataFrame"] {
+    border-radius: 12px !important;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  }
+  div[data-testid="stDataFrame"] tbody tr {
+    transition: background-color 0.2s ease;
+  }
+  div[data-testid="stDataFrame"] tbody tr:hover {
+    background-color: rgba(0, 0, 0, 0.035) !important;
+  }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 QUOTES_LOG_COLUMNS = [
     "Date",
