@@ -1184,6 +1184,101 @@ QUOTES_CSV_COLUMNS = [
     "signed_quote_path",
 ]
 
+
+def _parse_quote_contacts_row(row: dict | pd.Series | None) -> list[dict[str, str]]:
+    """מחזיר רשימת אנשי קשר [{'name','role','email'}, ...] משורת הצעה. תומך ב-JSON בעמודת Contact Person או בפורמט ישן (שם + מייל)."""
+    if not row:
+        return []
+    if isinstance(row, pd.Series):
+        cp = str(row.get("Contact Person") or "").strip()
+        ce = str(row.get("Client Email") or "").strip()
+    else:
+        cp = str(row.get("Contact Person") or "").strip()
+        ce = str(row.get("Client Email") or "").strip()
+    if cp.startswith("["):
+        try:
+            data = json.loads(cp)
+            if isinstance(data, list):
+                out: list[dict[str, str]] = []
+                for item in data:
+                    if isinstance(item, dict):
+                        out.append(
+                            {
+                                "name": str(item.get("name") or "").strip(),
+                                "role": str(item.get("role") or "").strip(),
+                                "email": str(item.get("email") or "").strip(),
+                            }
+                        )
+                    elif isinstance(item, str) and item.strip():
+                        out.append({"name": item.strip(), "role": "", "email": ""})
+                if out:
+                    return out
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if not cp and not ce:
+        return []
+    return [{"name": cp, "role": "", "email": ce}]
+
+
+def _quote_contacts_to_storage_cells(contacts: list[dict[str, str]]) -> tuple[str, str]:
+    """מחזיר (Contact Person, Client Email) לגיליון — מיילים מופרדים בפסיק; Contact Person כ-JSON כשיש כמה/תפקיד."""
+    cleaned: list[dict[str, str]] = []
+    for c in contacts:
+        name = str(c.get("name") or "").strip()
+        role = str(c.get("role") or "").strip()
+        email = str(c.get("email") or "").strip()
+        if name or role or email:
+            cleaned.append({"name": name, "role": role, "email": email})
+    if not cleaned:
+        return "", ""
+    emails_ordered: list[str] = []
+    seen: set[str] = set()
+    for c in cleaned:
+        e = c["email"]
+        if e and e.lower() not in seen:
+            seen.add(e.lower())
+            emails_ordered.append(e)
+    client_email_cell = ", ".join(emails_ordered)
+    use_json = len(cleaned) > 1 or any(c["role"] for c in cleaned)
+    if not use_json:
+        only = cleaned[0]
+        return only["name"], client_email_cell or only["email"]
+    return json.dumps(cleaned, ensure_ascii=False), client_email_cell
+
+
+def _contact_person_display_for_context(contacts: list[dict[str, str]]) -> str:
+    """מחרוזת תצוגה להצעה / מייל — שמות ותפקידים."""
+    parts: list[str] = []
+    for c in contacts:
+        name = (c.get("name") or "").strip()
+        role = (c.get("role") or "").strip()
+        if name and role:
+            parts.append(f"{name} ({role})")
+        elif name:
+            parts.append(name)
+    return ", ".join(parts)
+
+
+def _normalize_email_recipient_list(to_email: str | list[str] | None) -> list[str]:
+    """רשימת מיילים ייחודית לפי סדר — ממחרוזת אחת או רשימה, עם פסיק/נקודה-פסיק."""
+    chunks: list[str] = []
+    if to_email is None:
+        return []
+    if isinstance(to_email, list):
+        chunks = [str(x) for x in to_email]
+    else:
+        chunks = [str(to_email)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for ch in chunks:
+        for part in ch.replace(";", ",").split(","):
+            p = part.strip()
+            if p and p.lower() not in seen:
+                seen.add(p.lower())
+                out.append(p)
+    return out
+
+
 ALLOWED_QUOTE_STATUSES = ["Draft", "Sent", "Approved", "Revision Needed", "Rejected", "Signed", "הומר לפרויקט"]
 DEFAULT_QUOTE_STATUS = "Draft"
 PROJECTS_DB_COLUMNS = [
@@ -1704,7 +1799,7 @@ def send_kickoff_email(
 
 
 def send_quote_email_via_smtp(
-    to_email: str,
+    to_email: str | list[str],
     subject: str,
     body: str,
     cc_list: list[str] | None = None,
@@ -1712,6 +1807,7 @@ def send_quote_email_via_smtp(
 ) -> bool:
     """
     שולח מייל הצעת מחיר ללקוח עם PDF מצורף מקובץ פיזי קבוע (current_quote_temp.pdf).
+    ניתן להעביר מספר נמעני To — הראשון ב-TO והנוספים יתווספו ל-Cc.
     מחזיר True אם השליחה הצליחה, False אחרת.
     """
     try:
@@ -1734,17 +1830,22 @@ def send_quote_email_via_smtp(
                 "חסרים נתוני אימייל ב-secrets (בדוק מקטע [email_tali] או [email_eran] בהתאם לבחירה)"
             )
             return False
-        to_email = (to_email or "").strip()
-        if not to_email:
+        recipients = _normalize_email_recipient_list(to_email)
+        if not recipients:
             st.error("חסרה כתובת אימייל ללקוח.")
             return False
+        primary_to = recipients[0]
+        extra_client_cc = recipients[1:]
 
         msg = MIMEMultipart()
         msg["From"] = sender_email
-        msg["To"] = to_email
+        msg["To"] = primary_to
         msg["Subject"] = subject
+        merged_cc: list[str] = [c for c in extra_client_cc if c and str(c).strip()]
         if cc_list:
-            msg["Cc"] = ", ".join(cc for cc in cc_list if cc and str(cc).strip())
+            merged_cc.extend(str(cc).strip() for cc in cc_list if cc and str(cc).strip())
+        if merged_cc:
+            msg["Cc"] = ", ".join(merged_cc)
         msg.attach(MIMEText(body, "plain"))
 
         file_to_attach = str(CURRENT_QUOTE_TEMP_PDF)
@@ -3096,8 +3197,6 @@ def show_quote_page() -> None:
     if prefill and selected_mode != _prev_selection:
         st.session_state["_quote_edit_selection"] = selected_mode
         st.session_state["client_name"] = _prefill_str("Client")
-        st.session_state["contact_person"] = _prefill_str("Contact Person")
-        st.session_state["client_email"] = _prefill_str("Client Email")
         st.session_state["project_name"] = _prefill_str("Project")
         st.session_state["quote_subject"] = _prefill_str("Quote Subject")
         st.session_state["quote_number"] = _prefill_str("Quote Number") or next_quote_number
@@ -3141,6 +3240,21 @@ def show_quote_page() -> None:
     elif not is_edit_mode:
         st.session_state["_quote_edit_selection"] = ""
 
+    _qc_key = "quote_project_contacts_df"
+    _q_mode_prev = "_quote_page_selected_mode_prev"
+    if st.session_state.get(_q_mode_prev) != selected_mode:
+        st.session_state.pop("quote_contacts_data_editor", None)
+        st.session_state[_q_mode_prev] = selected_mode
+        if is_edit_mode and prefill:
+            plist = _parse_quote_contacts_row(prefill)
+            st.session_state[_qc_key] = pd.DataFrame(
+                plist if plist else [{"name": "", "role": "", "email": ""}]
+            )
+        else:
+            st.session_state[_qc_key] = pd.DataFrame([{"name": "", "role": "", "email": ""}])
+    elif _qc_key not in st.session_state:
+        st.session_state[_qc_key] = pd.DataFrame([{"name": "", "role": "", "email": ""}])
+
     # --- בחירת סקופ ההצעה (Checkboxes) ---
     st.header("בחירת מרכיבי ההצעה")
     cb1, cb2, cb3, cb4, cb5 = st.columns(5)
@@ -3159,13 +3273,36 @@ def show_quote_page() -> None:
     st.header("פרטי הפרויקט")
     default_client = prefill.get("Client", "") or st.session_state.get("edit_client_name", "")
     default_project = prefill.get("Project", "") or st.session_state.get("edit_project_name", "")
-    default_contact = prefill.get("Contact Person", "") or st.session_state.get("edit_contact_person", "")
-    default_email = prefill.get("Client Email", "") or st.session_state.get("edit_client_email", "")
     default_subject = prefill.get("Quote Subject", "") or st.session_state.get("edit_quote_subject", "")
     default_quote_num = prefill.get("Quote Number", "") or st.session_state.get("edit_quote_number") or next_quote_number
     client_name = st.text_input("שם הלקוח (client_name)", value=default_client, key="client_name")
-    contact_person = st.text_input("איש קשר (contact_person)", value=default_contact, key="contact_person")
-    client_email = st.text_input("אימייל לקוח (client_email)", value=default_email, key="client_email")
+    with st.expander("אנשי קשר לפרויקט (שם, תפקיד, מייל)", expanded=True):
+        st.caption(
+            "ניתן להוסיף שורות — כל שורה איש קשר. כתובות המייל יופיעו בבחירת נמענים בשליחת הצעה ובהפקת חשבון."
+        )
+        _df_cont = st.session_state.get(_qc_key)
+        if _df_cont is None or not isinstance(_df_cont, pd.DataFrame):
+            _df_cont = pd.DataFrame([{"name": "", "role": "", "email": ""}])
+        edited_contacts_df = st.data_editor(
+            _df_cont,
+            column_config={
+                "name": st.column_config.TextColumn("שם", width="medium"),
+                "role": st.column_config.TextColumn("תפקיד", width="small"),
+                "email": st.column_config.TextColumn("מייל", width="large"),
+            },
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            key="quote_contacts_data_editor",
+        )
+        st.session_state[_qc_key] = edited_contacts_df
+    contacts_list = (
+        edited_contacts_df.to_dict("records")
+        if edited_contacts_df is not None and not edited_contacts_df.empty
+        else []
+    )
+    contact_person, client_email = _quote_contacts_to_storage_cells(contacts_list)
+    contact_person_display = _contact_person_display_for_context(contacts_list)
     project_name = st.text_input("שם הפרויקט (project_name)", value=default_project, key="project_name")
     quote_subject = st.text_input("נושא ההצעה (quote_subject)", value=default_subject, key="quote_subject")
     quote_number = st.text_input(
@@ -3551,7 +3688,7 @@ def show_quote_page() -> None:
         context = {
             # פרטים כלליים
             "client_name": client_name,
-            "contact_person": contact_person,
+            "contact_person": contact_person_display,
             "project_name": project_name,
             "quote_subject": quote_subject,
             "quote_number": quote_number,
@@ -3831,7 +3968,7 @@ def show_quote_page() -> None:
                 st.session_state['pdf_bytes'] = None
                 st.session_state['final_pdf_bytes'] = None
             st.session_state['current_email_client'] = client_email or ""
-            st.session_state['current_contact_person'] = contact_person or ""
+            st.session_state['current_contact_person'] = contact_person_display or ""
             st.session_state['current_project_name'] = project_name or ""
             st.session_state['current_quote_version'] = quote_version or ""
             st.session_state['current_client_name'] = client_name or ""
@@ -3862,7 +3999,7 @@ def show_quote_page() -> None:
             st.session_state["current_quotes_dir"] = str(Path(file_path).parent)
             st.session_state["current_display_path"] = file_path
             st.session_state["current_email_client"] = client_email or ""
-            st.session_state["current_contact_person"] = contact_person or ""
+            st.session_state["current_contact_person"] = contact_person_display or ""
             st.session_state["current_project_name"] = project_name or ""
             st.session_state["current_quote_version"] = (edit_quote_row.get("Version") or "").strip() or "V1"
             st.session_state["current_client_name"] = client_name or ""
@@ -3908,7 +4045,7 @@ def show_quote_page() -> None:
         # עדכון פרטי המייל מהטופס הנוכחי (במצב עריכה)
         if is_edit_mode and edit_quote_row:
             st.session_state["current_email_client"] = client_email or ""
-            st.session_state["current_contact_person"] = contact_person or ""
+            st.session_state["current_contact_person"] = contact_person_display or ""
             st.session_state["current_project_name"] = project_name or ""
             st.session_state["current_client_name"] = client_name or ""
 
@@ -3995,6 +4132,20 @@ def show_quote_page() -> None:
         st.caption("תצוגה מקדימה של המייל:")
         st.text_input("נושא", value=email_subject, key="quote_email_preview_subject")
         st.text_area("תוכן", value=email_body, height=120, key="quote_email_preview_body")
+        quote_mail_opts = _normalize_email_recipient_list(client_email_mail)
+        if not quote_mail_opts:
+            quote_mail_opts = _normalize_email_recipient_list(client_email or "")
+        quote_send_to: list[str] = []
+        st.markdown("##### שלח אל:")
+        if quote_mail_opts:
+            quote_send_to = st.multiselect(
+                "נמעני לקוח (ניתן לבחור מספר כתובות)",
+                options=quote_mail_opts,
+                default=quote_mail_opts,
+                key="quote_send_recipients_ms",
+            )
+        else:
+            st.caption("הוסיפו מייל באזור «אנשי קשר לפרויקט» כדי לשלוח מהמערכת.")
         send_via = st.radio(
             "בחר שיטת שליחה",
             ["שליחה מ-Gmail (טלי)", "שליחה מ-Webmail (ערן)"],
@@ -4004,8 +4155,8 @@ def show_quote_page() -> None:
         cc_list = cc_base + [email_tali_str, email_eran_str]
         if send_via == "שליחה מ-Gmail (טלי)":
             if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn_gmail", type="primary"):
-                if not client_email_mail or not client_email_mail.strip():
-                    st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
+                if not quote_send_to:
+                    st.error("בחר לפחות כתובת אימייל אחת בשדה «שלח אל».")
                 elif not CURRENT_QUOTE_TEMP_PDF.exists():
                     st.error(
                         "הקובץ הפיזי לא נמצא. אנא לחץ שוב על 'שמור / עדכן הצעת מחיר' כדי לייצר אותו."
@@ -4013,7 +4164,7 @@ def show_quote_page() -> None:
                 else:
                     with st.spinner("שולח מייל..."):
                         ok = send_quote_email_via_smtp(
-                            client_email_mail,
+                            quote_send_to,
                             st.session_state.get(
                                 "quote_email_preview_subject", email_subject
                             ),
@@ -4027,8 +4178,8 @@ def show_quote_page() -> None:
                         st.rerun()
         else:
             if st.button("שלח הצעת מחיר ללקוח 🚀", key="send_quote_btn_webmail", type="primary"):
-                if not client_email_mail or not client_email_mail.strip():
-                    st.error("חסרה כתובת אימייל ללקוח. הזן אימייל בשדה 'אימייל לקוח'.")
+                if not quote_send_to:
+                    st.error("בחר לפחות כתובת אימייל אחת בשדה «שלח אל».")
                 elif not CURRENT_QUOTE_TEMP_PDF.exists():
                     st.error(
                         "הקובץ הפיזי לא נמצא. אנא לחץ שוב על 'שמור / עדכן הצעת מחיר' כדי לייצר אותו."
@@ -4036,7 +4187,7 @@ def show_quote_page() -> None:
                 else:
                     with st.spinner("שולח מייל..."):
                         ok = send_quote_email_via_smtp(
-                            client_email_mail,
+                            quote_send_to,
                             st.session_state.get(
                                 "quote_email_preview_subject", email_subject
                             ),
@@ -4072,6 +4223,7 @@ def show_quote_page() -> None:
                 "final_pdf_bytes",
                 "quote_email_preview_subject",
                 "quote_email_preview_body",
+                "quote_send_recipients_ms",
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
@@ -4203,6 +4355,7 @@ def build_transaction_invoice_pdf_bytes(
     advance_paid: float,
     footer_text: str,
     account_notes: str = "",
+    honoree_contact_lines: list[str] | None = None,
 ) -> bytes:
     """יוצר PDF של חשבון עסקה לפי תבנית סטודיו 84 (TTF + reshape + bidi).
 
@@ -4291,6 +4444,11 @@ def build_transaction_invoice_pdf_bytes(
     pdf.set_font("Hebrew", "", 10)
     pdf.cell(0, 7, _pdf_bidi_text("לכבוד:"), align="R", ln=1)
     pdf.cell(0, 7, _pdf_bidi_text(client_name), align="R", ln=1)
+    if honoree_contact_lines:
+        for hl in honoree_contact_lines:
+            line = (hl or "").strip()
+            if line:
+                pdf.multi_cell(0, 6, _pdf_bidi_text(line), align="R")
     pdf.cell(0, 7, _pdf_bidi_text(f"הנדון: {project_name}"), align="R", ln=1)
     pdf.ln(5)
     pdf.set_x(left_m)
@@ -4621,6 +4779,56 @@ def _show_finance_collection_dashboard() -> None:
                 key=inv_notes_key,
             )
 
+            proj_contacts = _parse_quote_contacts_row(rdict_dem)
+            email_opts: list[str] = []
+            seen_m: set[str] = set()
+            for c in proj_contacts:
+                e = (c.get("email") or "").strip()
+                if e and e.lower() not in seen_m:
+                    seen_m.add(e.lower())
+                    email_opts.append(e)
+            if not email_opts:
+                email_opts = _normalize_email_recipient_list(str(r_dem.get("Client Email") or ""))
+
+            def _finance_inv_recipient_label(e: str) -> str:
+                el = (e or "").strip().lower()
+                for c in proj_contacts:
+                    if (c.get("email") or "").strip().lower() == el:
+                        n = (c.get("name") or "").strip()
+                        r = (c.get("role") or "").strip()
+                        if n and r:
+                            return f"{n} ({r}) — {e}"
+                        if n:
+                            return f"{n} — {e}"
+                        break
+                return e
+
+            st.markdown("##### שלח אל:")
+            selected_inv_emails: list[str] = []
+            if email_opts:
+                selected_inv_emails = st.multiselect(
+                    "כתובות מייל מהפרויקט (מסומנות יופיעו תחת «לכבוד» ב-PDF)",
+                    options=email_opts,
+                    default=email_opts,
+                    key=f"finance_inv_recipients_{demand_ix}",
+                    format_func=_finance_inv_recipient_label,
+                )
+            else:
+                st.caption("לא הוזנו כתובות מייל באנשי הקשר של ההצעה — עדכנו בהצעת המחיר.")
+
+            sel_lower = {x.lower() for x in selected_inv_emails}
+            honoree_lines: list[str] = []
+            for c in proj_contacts:
+                e = (c.get("email") or "").strip()
+                if not e or e.lower() not in sel_lower:
+                    continue
+                n = (c.get("name") or "").strip()
+                r = (c.get("role") or "").strip()
+                if n and r:
+                    honoree_lines.append(f"{n} — {r}")
+                elif n:
+                    honoree_lines.append(n)
+
             lines_subtotal = 0.0
             if edited_demand is not None and not edited_demand.empty:
                 ed = edited_demand.copy()
@@ -4666,6 +4874,7 @@ def _show_finance_collection_dashboard() -> None:
                     adv_dem,
                     footer_t,
                     account_notes=str(invoice_notes or ""),
+                    honoree_contact_lines=honoree_lines,
                 )
             except Exception as e:
                 st.error(f"שגיאה ביצירת PDF: {e}")
@@ -6374,7 +6583,8 @@ def show_project_folders_page() -> None:
     project = (row.get("Project") or "").strip()
 
     client_email = (row.get("Client Email") or "").strip()
-    contact_person = (row.get("Contact Person") or "").strip()
+    hub_contacts = _parse_quote_contacts_row(row)
+    contact_person = _contact_person_display_for_context(hub_contacts)
     architect_phone = (
         (
             row.get("Architect Contact")
@@ -6392,8 +6602,8 @@ def show_project_folders_page() -> None:
         st.subheader("תעודת זהות — פרויקט")
         st.markdown(f"**שם פרויקט:** {project or '—'}")
         st.markdown(f"**לקוח:** {client or '—'}")
-        st.markdown(f"**איש קשר (מההצעה):** {contact_person or '—'}")
-        st.markdown(f"**אימייל לקוח:** {client_email or '—'}")
+        st.markdown(f"**אנשי קשר (מההצעה):** {contact_person or '—'}")
+        st.markdown(f"**אימייל(ים) לקוח:** {client_email or '—'}")
         st.markdown(f"**טלפון לקוח:** {client_phone or '—'}")
         st.markdown(f"**שם/טלפון אדריכל:** {architect_phone or '—'}")
         ver = (row.get("Version") or "").strip()
