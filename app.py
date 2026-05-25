@@ -2684,17 +2684,56 @@ def _quote_versions_equivalent_for_match(v_log: str, v_csv: str) -> bool:
     return na > 0 and nb > 0 and na == nb
 
 
+def _quote_date_to_match_str(d) -> str:
+    """Normalize quote Date from sheet/editor to comparable dd/mm/yyyy string."""
+    if d is None or (isinstance(d, str) and not str(d).strip()):
+        return ""
+    if hasattr(d, "strftime"):
+        return d.strftime("%d/%m/%Y")
+    s = str(d).strip()
+    parsed = _parse_edit_date(s)
+    return parsed.strftime("%d/%m/%Y") if parsed else s
+
+
+def _quote_dates_equivalent_for_match(d_log, d_csv: str) -> bool:
+    a = _quote_date_to_match_str(d_log)
+    b = _quote_date_to_match_str(d_csv)
+    if not a and not b:
+        return True
+    if a == b:
+        return True
+    pa, pb = _parse_edit_date(a), _parse_edit_date(b)
+    return pa is not None and pb is not None and pa == pb
+
+
+def _normalize_quote_log_row(row: dict) -> dict:
+    """Normalize log row from data_editor (pandas types) for lookup and convert."""
+    out = dict(row)
+    out["Date"] = _quote_date_to_match_str(out.get("Date"))
+    out["Client"] = (out.get("Client") or "").strip()
+    out["Project"] = (out.get("Project") or "").strip()
+    v = (out.get("Version") or "").strip()
+    out["Version"] = v or "V1"
+    out["Status"] = (out.get("Status") or "").strip()
+    return out
+
+
+ALLOWED_CONVERT_TO_PROJECT_STATUSES = frozenset(
+    {"signed", "approved", "אושר", "חתום"}
+)
+
+
 def get_quote_from_csv_by_log_row(log_row: dict) -> dict | None:
     """
     שליפת שורת הצעה מלאה לפי Date + Client + Project + Version (כמו במפתח ב-write_quotes_log).
     נדרש כשיש יותר משורה עם אותה שלישיית Client/Project/Version — get_quote_from_csv מחזירה רק את הראשונה.
     """
-    td = (log_row.get("Date") or "").strip()
-    tc = (log_row.get("Client") or "").strip()
-    tp = (log_row.get("Project") or "").strip()
-    tv = (log_row.get("Version") or "").strip() or "V1"
+    norm = _normalize_quote_log_row(log_row)
+    tc = norm["Client"]
+    tp = norm["Project"]
+    tv = norm["Version"]
     for r in read_quotes_csv():
-        if (r.get("Date") or "").strip() != td:
+        if not _quote_dates_equivalent_for_match(norm.get("Date"), r.get("Date")):
             continue
         if (r.get("Client") or "").strip() != tc:
             continue
@@ -2732,10 +2771,34 @@ def update_quote_in_csv(
     return False
 
 
+def update_quote_by_log_row(
+    log_row: dict,
+    updated_row: dict,
+    *,
+    skip_rerun: bool = False,
+) -> bool:
+    """Update quote by Date + Client + Project + Version (handles duplicate Client/Project/Version)."""
+    norm = _normalize_quote_log_row(log_row)
+    rows = read_quotes_csv()
+    for i, r in enumerate(rows):
+        if not _quote_dates_equivalent_for_match(norm.get("Date"), r.get("Date")):
+            continue
+        if (r.get("Client") or "").strip() != norm["Client"]:
+            continue
+        if (r.get("Project") or "").strip() != norm["Project"]:
+            continue
+        if not _quote_versions_equivalent_for_match(norm["Version"], (r.get("Version") or "").strip()):
+            continue
+        rows[i] = {c: (updated_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
+        write_quotes_csv(rows, skip_rerun=skip_rerun)
+        return True
+    return False
+
+
 def _status_allows_convert_to_project(status: str) -> bool:
     """Signed / Approved / אושר / חתום — ללא תלות ברישיות."""
     s = (status or "").strip().lower()
-    return s in ("signed", "approved", "אושר", "חתום")
+    return s in ALLOWED_CONVERT_TO_PROJECT_STATUSES
 
 
 def convert_quote_to_project(
@@ -2754,8 +2817,9 @@ def convert_quote_to_project(
     """
     try:
         # א. משיכת נתוני הצעת המחיר — לפי שורת ניהול מלאה (תאריך+מפתח) כדי לא לבלבל בין כפילויות Client/Project/Version
-        if log_row is not None:
-            full_row = get_quote_from_csv_by_log_row(log_row)
+        norm_log = _normalize_quote_log_row(log_row) if log_row else None
+        if norm_log is not None:
+            full_row = get_quote_from_csv_by_log_row(norm_log)
         else:
             full_row = get_quote_from_csv(client, project, version)
         if not full_row:
@@ -2766,13 +2830,21 @@ def convert_quote_to_project(
         total_str = f"{total_amount:.2f}" if total_amount else ""
         if not client_name or not project_name:
             return False, "חסרים שם לקוח או שם פרויקט בהצעה.", ("", "", ""), True
-        status = (full_row.get("Status") or "").strip()
-        if status == "הומר לפרויקט":
+        csv_status = (full_row.get("Status") or "").strip()
+        ui_status = (norm_log.get("Status") or "").strip() if norm_log else ""
+        if csv_status == "הומר לפרויקט" or ui_status == "הומר לפרויקט":
             return False, "ההצעה כבר הומרה לפרויקט בעבר.", ("", "", ""), True
-        if not _status_allows_convert_to_project(status):
+        if not (
+            _status_allows_convert_to_project(csv_status)
+            or _status_allows_convert_to_project(ui_status)
+        ):
+            detail = f"בגיליון: {csv_status or '(ריק)'}"
+            if ui_status and ui_status != csv_status:
+                detail += f" | בטבלה: {ui_status}"
             return (
                 False,
-                f"ניתן להמיר רק הצעות בסטטוס 'אושר' או 'חתום'. הסטטוס הנוכחי: {status}",
+                "ניתן להמיר רק הצעות בסטטוס Signed / Approved / חתום / אושר. "
+                f"({detail})",
                 ("", "", ""),
                 True,
             )
@@ -2805,14 +2877,14 @@ def convert_quote_to_project(
             skip_rerun=True,
         )
 
-        # ה. עדכון סטטוס הצעת המחיר
+        # ה. עדכון סטטוס הצעת המחיר (לפי תאריך+מפתח — לא רק Client/Project/Version)
         updated = {c: (full_row.get(c) or "") for c in QUOTES_CSV_COLUMNS}
         updated["Status"] = "הומר לפרויקט"
-        if not update_quote_in_csv(
-            full_row.get("Client", ""),
-            full_row.get("Project", ""),
-            full_row.get("Version", ""),
+        update_key = norm_log if norm_log is not None else full_row
+        if not update_quote_by_log_row(
+            update_key,
             updated,
+            skip_rerun=True,
         ):
             return False, "לא ניתן לעדכן את סטטוס ההצעה.", (main_link, upload_link, deliverables_link), dropbox_failed
 
@@ -5108,25 +5180,28 @@ def show_quotes_management_page() -> None:
                 ]
             )
 
-        convertible = [
-            (i, r)
-            for i, r in edited_df.iterrows()
-            if _status_allows_convert_to_project((r.get("Status") or "").strip())
-        ]
+        convertible: list[tuple[int, dict]] = []
+        for df_ix, r in edited_df.iterrows():
+            row_dict = _normalize_quote_log_row(
+                r.to_dict() if hasattr(r, "to_dict") else dict(r)
+            )
+            if _status_allows_convert_to_project(row_dict.get("Status", "")):
+                convertible.append((int(df_ix), row_dict))
         if convertible:
             st.subheader("הפוך לפרויקט חדש")
-            convert_options = []
-            for _, r in convertible:
-                row_dict = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+            convert_options: list[tuple[int, str, dict]] = []
+            for df_ix, row_dict in convertible:
                 v = (row_dict.get("Version") or "").strip() or "1"
-                lbl = f"{row_dict.get('Date', '')} | {row_dict.get('Client', '')} | {row_dict.get('Project', '')} | גרסה: {v}"
-                row_key = _quote_log_row_unique_key(row_dict)
-                convert_options.append((row_key, lbl, row_dict))
-            convert_labels = {k: lbl for k, lbl, _ in convert_options}
-            selected_convert_key = st.selectbox(
+                lbl = (
+                    f"{row_dict.get('Date', '')} | {row_dict.get('Client', '')} | "
+                    f"{row_dict.get('Project', '')} | גרסה: {v}"
+                )
+                convert_options.append((df_ix, lbl, row_dict))
+            convert_labels = {ix: lbl for ix, lbl, _ in convert_options}
+            selected_convert_ix = st.selectbox(
                 "בחר הצעה מאושרת להמרה לפרויקט",
-                options=[k for k, _, _ in convert_options],
-                format_func=lambda k: convert_labels.get(k, str(k)),
+                options=[ix for ix, _, _ in convert_options],
+                format_func=lambda ix: convert_labels.get(ix, str(ix)),
                 key="convert_quote_select",
             )
             convert_clicked = st.button(
@@ -5134,9 +5209,9 @@ def show_quotes_management_page() -> None:
                 key="convert_quote_btn",
                 type="primary",
             )
-            if convert_clicked and selected_convert_key is not None:
+            if convert_clicked and selected_convert_ix is not None:
                 sel = next(
-                    (rd for k, _, rd in convert_options if k == selected_convert_key),
+                    (rd for ix, _, rd in convert_options if ix == selected_convert_ix),
                     None,
                 )
                 if sel is not None:
@@ -5158,7 +5233,7 @@ def show_quotes_management_page() -> None:
                             )
                         else:
                             st.success("הפרויקט הוקם בהצלחה. הסטטוס עודכן ל'הומר לפרויקט'.")
-                        st.session_state["quote_mgmt_kickoff_default_key"] = selected_convert_key
+                        st.session_state["quote_mgmt_kickoff_default_key"] = _quote_log_row_unique_key(sel)
                         time.sleep(1.5)
                         st.rerun()
                     else:
